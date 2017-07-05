@@ -1,0 +1,76 @@
+--- Diagnosis ---
+
+Table name: Nonces
+Column 'accountID':
+	SQL: bigint unsigned not null
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Possible navigator: account() -> Account object
+Column 'blockID':
+	SQL: bigint unsigned not null
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Possible navigator: block() -> Block object
+Column 'nonce':
+	SQL: bigint unsigned not null
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Column 'submitted_when':
+	SQL: timestamp not null default current_timestamp
+	C++ data type: time_t
+	mySQL connector type: Timestamp
+	Null-ness: NOT null
+Column 'deadline':
+	SQL: bigint unsigned not null
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Column 'deadline_string':
+	SQL: varchar(255) not null
+	C++ data type: std::string
+	mySQL connector type: String
+	Null-ness: NOT null
+Column 'forge_when':
+	SQL: timestamp not null default "0000-00-00 00:00:00"
+	C++ data type: time_t
+	mySQL connector type: Timestamp
+	Null-ness: NOT null
+Column 'is_blocks_best_deadline':
+	SQL: boolean not null default false
+	C++ data type: bool
+	mySQL connector type: Boolean
+	Null-ness: NOT null
+Column 'is_accounts_best_deadline':
+	SQL: boolean not null default false
+	C++ data type: bool
+	mySQL connector type: Boolean
+	Null-ness: NOT null
+Column 'miner':
+	SQL: varchar(255)
+	C++ data type: std::string
+	mySQL connector type: String
+	Null-ness: can be null
+Primary keys: accountID, blockID, nonce
+Index: [anon]: blockID, accountID
+Index: [anon]: blockID, deadline desc
+Method: 'save_and_rank' takes [nothing], returns void 
+Method: 'get_best_block_nonce' takes  uint64_t blockID , returns STATIC Nonce *
+Method: 'get_first_block_nonce' takes  uint64_t blockID , returns STATIC Nonce *
+Method: 'get_worst_block_nonce' takes  uint64_t blockID , returns STATIC Nonce *
+Method: 'get_last_block_nonce' takes  uint64_t blockID , returns STATIC Nonce *
+Method: 'get_best_account_nonce' takes  uint64_t blockID, uint64_t accountID , returns STATIC Nonce *
+Method: 'plot_nonce' takes  uint64_t account_id, uint64_t nonce , returns STATIC uint8_t *
+Method: 'calculate_deadline' takes  uint64_t account_id, uint64_t nonce, uint64_t blockID, uint32_t scoop, uint64_t base_target, std::string gen_sig_str , returns STATIC uint64_t 
+Method: 'deadline_to_string' takes  uint64_t deadline , returns STATIC std::string 
+
+--- Sanity checking ---
+
+
+--- Output ---
+
+Key column: accountID
+Key column: blockID
+Key column: nonce

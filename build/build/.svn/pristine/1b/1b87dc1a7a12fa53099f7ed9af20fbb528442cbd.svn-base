@@ -1,0 +1,12 @@
+#include "IDB/IDB.h"
+
+extern const char *DB_URI;
+extern const char *DB_USER;
+extern const char *DB_PASSWORD;
+extern const char *DB_SCHEMA;
+extern const int DB_POOL_SIZE;
+
+IDB::Engine *request_db_connection();
+void release_db_connection(IDB::Engine *idb);
+void database_init();
+void database_shutdown();

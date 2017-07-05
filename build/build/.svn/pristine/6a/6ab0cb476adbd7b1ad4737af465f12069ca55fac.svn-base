@@ -1,0 +1,45 @@
+SRC_FILES:=${shell cd src; ls -1 *.cpp} PayPal/Payment.cpp
+LIB_FILES:=${SRC_FILES:.cpp=.o}
+LIB_FILES:=${addprefix lib/,${LIB_FILES}}
+
+.PATH: src include lib
+.SUFFIXES: .o .cpp .hpp
+
+all: 	lib/Indigo/Renderer.pm lib/libIDB.so lib/libIO.so lib/PayPal ${LIB_FILES}
+
+DEBUG_FLAGS+= -DFOLLOW_SYMLINKS
+CFLAGS?=-O3
+CFLAGS+=-pthread -fpic -g -std=c++11
+
+clean:
+	rm -f lib/*.o lib/Paypal/*.o lib/*.so lib/*.a
+
+include/IDB/IDB.h: src/IDB/IDB.h
+	cd src/IDB; gmake install
+
+include/IO/Object.h: src/IO/Object.h
+	cd src/IO; gmake install
+
+lib/libIDB.so: src/IDB/IDB.h
+	cd src/IDB; gmake install
+
+lib/libIO.so: src/IO/Object.h
+	cd src/IO; gmake install
+
+lib/Indigo/Renderer.pm:
+	SVN_SSH="ssh -p9" svn co svn+ssh://indigo@svn.shmtech.biz/home/subversion/indigo/trunk/lib/Indigo lib/Indigo/
+
+src/IDB/IDB.h:
+	SVN_SSH="ssh -p9" svn co svn+ssh://indigo@svn.shmtech.biz/home/subversion/indigo/trunk/src/IDB src/IDB
+
+src/IO/Object.h:
+	SVN_SSH="ssh -p9" svn co svn+ssh://indigo@svn.shmtech.biz/home/subversion/indigo/trunk/src/IO src/IO
+
+lib/server.o:
+	@#do nothing
+
+lib/%.o: src/%.cpp include/%.hpp
+	${CXX} ${CFLAGS} -c ${DEBUG_FLAGS} -o $@ -I./include -I/usr/local/include src/$*.cpp
+
+lib/PayPal:
+	mkdir lib/PayPal

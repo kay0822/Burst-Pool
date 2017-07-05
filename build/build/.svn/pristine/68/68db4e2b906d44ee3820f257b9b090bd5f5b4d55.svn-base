@@ -1,0 +1,18 @@
+#include "Handler.hpp"
+
+#include <string>
+#include <map>
+
+typedef std::map< std::string, std::string > mime_type_map_t;
+
+class StaticHandler: public Handler {
+	public:
+		static std::string document_root;
+	
+		virtual int process( struct MHD_Connection *connection, Request *req, Response *resp );
+
+		static void register_mime_type( std::string ext, std::string mime_type );
+
+	private:
+		static mime_type_map_t		mime_type_map;
+};

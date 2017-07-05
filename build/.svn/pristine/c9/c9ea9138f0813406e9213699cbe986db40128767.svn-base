@@ -1,0 +1,276 @@
+#include "remote.hpp"
+#include "cJSON.hpp"
+#include "mining-info.hpp"
+
+#include "webAPI/cryptoGlance.hpp"
+
+#include "Block.hpp"
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+// {"pool_name":"Bitcoin Affiliate Network - Bitcoin Mining Pool","hashrate":5208349568262.6,"workers":2059,"shares_this_round":13620779008,"last_block":347702,"network_hashrate":343778196810823808,"fee":0,"payout":"pps"}
+static int CG_public( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	std::unique_ptr<Block> current_block( Block::latest_block() );
+
+	cJSON *root = cJSON_CreateObject();
+
+	// pool_name
+	cJSON_AddStringToObject( root, (char *)"pool_name", POOL_NAME.c_str() );
+
+	// shares_this_round?
+	Nonce nonces;
+	nonces.blockID( current_block->blockID() );
+	cJSON_AddNumberToObject( root, (char *)"shares_this_round", nonces.count() );
+
+	// fee
+	cJSON_AddNumberToObject( root, (char *)"fee", POOL_FEE_FRACTION );
+
+	std::unique_ptr<char> json( cJSON_Print(root) );
+
+	resp->status_code = 200;
+	resp->content = std::string(&*json);
+	resp->add_header( "Access-Control-Allow-Origin", "*" );
+
+	cJSON_Delete(root);
+
+	return MHD_YES;
+}
+
+
+static int CG_getpoolstatus( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	std::unique_ptr<Block> current_block( Block::latest_block() );
+
+	cJSON *data = cJSON_CreateObject();
+	// workers
+	cJSON_AddNumberToObject( data, (char *)"workers", current_block->num_potential_miners() );
+
+	// last_block (that we won?)
+	std::unique_ptr<Block> last_won_block( Block::latest_won_block() );
+	if (last_won_block) {
+		cJSON_AddNumberToObject( data, (char *)"lastblock", last_won_block->blockID() );
+
+		cJSON_AddNumberToObject( data, (char *)"timesincelast", time(NULL) - ( last_won_block->first_seen_when() + last_won_block->deadline() ) );
+	}
+
+	// current block
+	cJSON_AddNumberToObject( data, (char *)"currentnetworkblock", current_block->blockID() );
+
+	// network hashrate
+	cJSON_AddNumberToObject( data, (char *)"networkdiff", BLOCK0_BASE_TARGET / current_block->base_target() );
+
+	// efficiency (nonces submitted versus shares)
+	Nonce nonces;
+	nonces.blockID( current_block->blockID() );
+	Share shares;
+	shares.blockID( current_block->blockID() );
+	cJSON_AddNumberToObject( data, (char *)"efficiency", 100.0 * shares.count() / nonces.count() );
+
+	cJSON *action = cJSON_CreateObject();
+	cJSON_AddItemToObject( action, (char *)"data", data );
+
+	cJSON *root = cJSON_CreateObject();
+	cJSON_AddItemToObject( root, (char *)"getpoolstatus", action );
+
+	std::unique_ptr<char> json( cJSON_Print(root) );
+
+	resp->status_code = 200;
+	resp->content = std::string(&*json);
+	resp->add_header( "Access-Control-Allow-Origin", "*" );
+
+	cJSON_Delete(root);
+
+	return MHD_YES;
+}
+
+
+static int CG_getblockstats( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	cJSON *data = cJSON_CreateObject();
+
+	Block blocks;
+	blocks.is_our_block(true);
+	cJSON_AddNumberToObject( data, (char *)"TotalValid", blocks.count() );
+
+	cJSON *action = cJSON_CreateObject();
+	cJSON_AddItemToObject( action, (char *)"data", data );
+
+	cJSON *root = cJSON_CreateObject();
+	cJSON_AddItemToObject( root, (char *)"getblockstats", action );
+
+	std::unique_ptr<char> json( cJSON_Print(root) );
+
+	resp->status_code = 200;
+	resp->content = std::string(&*json);
+	resp->add_header( "Access-Control-Allow-Origin", "*" );
+
+	cJSON_Delete(root);
+
+	return MHD_YES;
+}
+
+
+static int CG_getuserbalance( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	std::string account = req->get_query_or_post("api_key");
+
+	if ( account.empty() ) {
+		resp->status_code = 400;
+		resp->content = json_error(3, "MPOS API 'getuserbalance' call requires 'api_key' argument.");
+		return MHD_YES;
+	}
+
+	uint64_t accountID = safe_strtoull( account );
+
+	if ( !accountID ) {
+		resp->status_code = 400;
+		resp->content = json_error(4, "MPOS API 'getuserbalance' call 'api_key' argument should be Burst NUMERICAL account ID.");
+		return MHD_YES;
+	}
+
+	cJSON *data = cJSON_CreateObject();
+
+
+	// balance deferred payments?
+	Reward rewards;
+	rewards.accountID( accountID );
+	rewards.is_paid( false );
+	rewards.below_amount( MINIMUM_PAYOUT * BURST_TO_NQT );
+	rewards.sum_amount(true);
+
+	std::unique_ptr<Reward> reward_total( rewards.present() );
+
+	if (reward_total)
+		cJSON_AddNumberToObject( data, (char *)"confirmed", reward_total->amount() / BURST_TO_NQT);
+
+	// unconfirmed balance is paid but unconfirmed payments?
+	rewards.clear();
+	rewards.accountID( accountID );
+	rewards.is_paid( true );
+	rewards.is_confirmed( false );
+	rewards.sum_amount(true);
+
+	reward_total.reset( rewards.present() );
+
+	if (reward_total)
+		cJSON_AddNumberToObject( data, (char *)"unconfirmed", reward_total->amount() / BURST_TO_NQT );
+
+	cJSON *action = cJSON_CreateObject();
+	cJSON_AddItemToObject( action, (char *)"data", data );
+
+	cJSON *root = cJSON_CreateObject();
+	cJSON_AddItemToObject( root, (char *)"getuserbalance", action );
+
+	std::unique_ptr<char> json( cJSON_Print(root) );
+
+	resp->status_code = 200;
+	resp->content = std::string(&*json);
+	resp->add_header( "Access-Control-Allow-Origin", "*" );
+
+	cJSON_Delete(root);
+
+	return MHD_YES;
+}
+
+
+static int CG_getuserstatus( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	std::string account = req->get_query_or_post("api_key");
+
+	if ( account.empty() ) {
+		resp->status_code = 400;
+		resp->content = json_error(3, "MPOS API 'getuserbalance' call requires 'api_key' argument.");
+		return MHD_YES;
+	}
+
+	uint64_t accountID = safe_strtoull( account );
+
+	if ( !accountID ) {
+		resp->status_code = 400;
+		resp->content = json_error(4, "MPOS API 'getuserbalance' call 'api_key' argument should be Burst NUMERICAL account ID.");
+		return MHD_YES;
+	}
+
+	cJSON *data = cJSON_CreateObject();
+
+	cJSON_AddStringToObject( data, (char *)"username", Account::accountID_to_RS_string(accountID).c_str() );
+
+	cJSON *action = cJSON_CreateObject();
+	cJSON_AddItemToObject( action, (char *)"data", data );
+
+	cJSON *root = cJSON_CreateObject();
+	cJSON_AddItemToObject( root, (char *)"getuserstatus", action );
+
+	std::unique_ptr<char> json( cJSON_Print(root) );
+
+	resp->status_code = 200;
+	resp->content = std::string(&*json);
+	resp->add_header( "Access-Control-Allow-Origin", "*" );
+
+	cJSON_Delete(root);
+
+	return MHD_YES;
+}
+
+
+static int CG_round(  struct MHD_Connection *connection, Request *req, Response *resp ) {
+	std::string height = req->get_query_or_post("height");
+
+	if ( height.empty() ) {
+		resp->status_code = 400;
+		resp->content = json_error(3, "MPOS API 'round' call requires 'height' argument.");
+		return MHD_YES;
+	}
+
+	// cheat by redirecting to Irontiga's block explorer!
+	return resp->redirect( 302, "https://block.burstcoin.info/search.php?s=" + height);
+}
+
+
+int Handlers::webAPI::cryptoGlance::process( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	// have we been given a requestType?
+	std::string action = req->get_query_or_post("action");
+	
+	std::string page = req->get_query_or_post("page");
+
+	if (page == "api") {
+		if (action == "public") {
+			// call that
+			return CG_public(connection, req, resp);
+		} else if (action == "getpoolstatus") {
+			// call that
+			return CG_getpoolstatus(connection, req, resp);
+		} else if (action == "getblockstats") {
+			// call that
+			return CG_getblockstats(connection, req, resp);
+		} else if (action == "getuserbalance") {
+			// call that
+			return CG_getuserbalance(connection, req, resp);
+		} else if (action == "getuserstatus") {
+			// call that
+			return CG_getuserstatus(connection, req, resp);
+		} else if ( !action.empty() ) {
+			resp->status_code = 404;
+			resp->content = json_error(1, "This MPOS API endpoint doesn't understand the '" + action + "' action.");
+		} else {
+			resp->status_code = 400;
+			resp->content = json_error(2, "This MPOS API endpoint requires an 'action' argument.");
+		}
+	} else if (page == "statistics") {
+		if (action == "round") {
+			// call that
+			return CG_round(connection, req, resp);
+		} else if ( !action.empty() ) {
+			resp->status_code = 404;
+			resp->content = json_error(1, "This MPOS API endpoint doesn't understand the '" + action + "' action.");
+		} else {
+			resp->status_code = 400;
+			resp->content = json_error(2, "This MPOS API endpoint requires an 'action' argument.");
+		}
+	} else {
+		resp->status_code = 404;
+		resp->content = json_error(5, "This MPOS API endpoint has no '" + page + "' page.");
+	}
+
+	// done!
+	return MHD_YES;
+}

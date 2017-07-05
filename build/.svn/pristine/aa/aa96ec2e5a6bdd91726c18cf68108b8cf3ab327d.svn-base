@@ -1,0 +1,295 @@
+#include <string.h>
+
+#include "Share.hpp"
+#include "Block.hpp"
+
+#include "webAPI/updates.hpp"
+
+#include "WebSocket.hpp"
+#include "remote.hpp"
+#include "mining-info.hpp"
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+WEBSOCKET_HANDLER_INIT(Handlers::webAPI::updates, "updates");
+
+
+Block *Handlers::webAPI::updates::current_block = NULL;
+time_t Handlers::webAPI::updates::started_when = time(NULL);
+bool Handlers::webAPI::updates::send_block_json = false;
+std::string Handlers::webAPI::updates::block_json = "";
+std::string Handlers::webAPI::updates::shares_json = "";
+seen_accounts_t Handlers::webAPI::updates::all_seen_accounts;
+
+
+void Handlers::webAPI::updates::update_account_info( uint64_t accountID ) {
+	// don't use "update_check()" here as it massively slows down the whole server
+	// there'll be a separate thread to update these accounts
+	std::unique_ptr<Account> account( Account::load_or_create(accountID) );
+
+	if (account) {
+		// we only need to add this account to the JSON if
+		//  we've not seen it before OR
+		//  it's newer than our timestamp
+
+		if ( all_seen_accounts.find(accountID) == all_seen_accounts.end() || account->last_updated_when() > all_seen_accounts[accountID] )
+			all_seen_accounts[accountID] = account->last_updated_when();
+	}
+}
+
+
+void Handlers::webAPI::updates::add_account_award( cJSON *awards, char *award_name, Nonce *nonce, time_t block_start_time ) {
+	update_account_info( nonce->accountID() );
+
+	cJSON *award_info = cJSON_CreateObject();
+
+	cJSON_AddStringToObject( award_info, (char *)"accountId", std::to_string( nonce->accountID() ).c_str() );
+	cJSON_AddNumberToObject( award_info, (char *)"submittedWhen", nonce->submitted_when() - block_start_time );
+
+	cJSON_AddItemToObject(awards, award_name, award_info);
+}
+
+
+cJSON *Handlers::webAPI::updates::generate_awards( uint64_t blockID, time_t block_start_time ) {
+	// awards!
+	cJSON *awards = cJSON_CreateObject();
+
+	Nonce *nonce = Nonce::get_best_block_nonce( blockID );
+	if (nonce) {
+		add_account_award( awards, (char *)"Best Deadline", nonce, block_start_time );
+		delete nonce;
+	}
+
+	nonce = Nonce::get_first_block_nonce( blockID );
+	if (nonce) {
+		add_account_award( awards, (char *)"First Miner To Submit", nonce, block_start_time );
+		delete nonce;
+	}
+
+	nonce = Nonce::get_worst_block_nonce( blockID );
+	if (nonce) {
+		add_account_award( awards, (char *)"Worst Deadline", nonce, block_start_time );
+		delete nonce;
+	}
+
+	nonce = Nonce::get_last_block_nonce( blockID );
+	if (nonce) {
+		add_account_award( awards, (char *)"Last Miner To Submit", nonce, block_start_time );
+		delete nonce;
+	}
+
+
+	Nonce nonces;
+	nonces.blockID( blockID );
+	cJSON_AddNumberToObject(awards, (char *)"Nonces Submitted", nonces.count() );
+
+
+	Share shares;
+	shares.blockID( blockID );
+	cJSON_AddNumberToObject(awards, (char *)"Miners Responded", shares.count() );
+
+
+	return awards;
+}
+
+
+
+void Handlers::webAPI::updates::websocket_alert() {
+	// if this is the first alert, generate needed JSON
+	if (first_websocket_alert) {
+		Block *latest_block = Block::latest_block();
+
+		if ( !current_block || latest_block->blockID() > current_block->blockID() ) {
+			// new block!
+			cJSON *root = cJSON_CreateObject();
+
+			if (current_block) {
+				// current_block is now previous block
+				cJSON_AddItemToObject(root, (char *)"awards", generate_awards( current_block->blockID(), current_block->first_seen_when() ) );
+				delete current_block;
+			} else {
+				// no current block?
+				// must be starting up so we have to manually load previous block
+				std::unique_ptr<Block> prev_block( Block::load( latest_block->blockID() - 1 ) );
+
+				if (prev_block)
+					cJSON_AddItemToObject(root, (char *)"awards", generate_awards( prev_block->blockID(), prev_block->first_seen_when() ) );
+			}
+
+			current_block = latest_block;
+
+			cJSON_AddNumberToObject( root, (char *)"block", current_block->blockID() );
+			cJSON_AddNumberToObject( root, (char *)"newBlockWhen", current_block->first_seen_when() );
+			cJSON_AddNumberToObject( root, (char *)"accountsRewardingUs", current_block->num_potential_miners() );
+			cJSON_AddNumberToObject( root, (char *)"difficulty", BLOCK0_BASE_TARGET / current_block->base_target() );
+			cJSON_AddNumberToObject( root, (char *)"scoop", current_block->scoop() );
+
+			std::unique_ptr<char> json( cJSON_PrintUnformatted(root) );
+			block_json = "BLOCK:" + std::string(&*json);
+
+			cJSON_Delete(root);
+
+			send_block_json = true;
+		} else {
+			delete latest_block;
+
+			send_block_json = false;
+		}
+
+		// any updates to shares to report?
+		std::unique_ptr<Share> shares( new Share() );
+		shares->blockID( current_block->blockID() );
+		shares->order_by( Share::COL_share_fraction, Share::ORDER_BY_DESC );
+		shares->search();
+
+		cJSON *current_array = cJSON_CreateArray();
+
+		uint64_t estimated_block_reward = Block::previous_reward_post_fee();
+
+		while( Share *share = shares->result() ) {
+			update_account_info( share->accountID() );
+
+			cJSON *entry = cJSON_CreateObject();
+			cJSON_AddStringToObject( entry, (char *)"accountId", std::to_string( share->accountID() ).c_str() );
+			cJSON_AddStringToObject( entry, (char *)"share", std::to_string( share->share_fraction() ).c_str() );
+			cJSON_AddNumberToObject( entry, (char *)"deadline", share->deadline() );
+			// cJSON_AddStringToObject( entry, (char *)"deadlineString", share->deadline_string().c_str() );
+
+			// we should be able to estimate reward if we win current block
+			cJSON_AddNumberToObject( entry, (char *)"estimatedReward", share->share_fraction() * estimated_block_reward * CURRENT_BLOCK_REWARD_PERCENT / 100 );
+
+			// miner info?
+			cJSON_AddStringToObject( entry, (char *)"miner", share->miner().c_str() );
+
+			cJSON_AddItemToArray(current_array, entry);
+
+			delete share;
+		}
+
+		// ...and again for historic blocks
+
+		shares.reset( Share::historic_shares( current_block->blockID() - 1, HISTORIC_BLOCK_COUNT ) );
+		shares->search();
+
+		cJSON *historic_array = cJSON_CreateArray();
+
+		while( Share *share = shares->result() ) {
+			update_account_info( share->accountID() );
+
+			cJSON *entry = cJSON_CreateObject();
+			cJSON_AddStringToObject( entry, (char *)"accountId", std::to_string( share->accountID() ).c_str() );
+			cJSON_AddStringToObject( entry, (char *)"share", std::to_string( share->share_fraction() ).c_str() );
+
+			// we should be able to estimate reward if we win current block
+			cJSON_AddNumberToObject( entry, (char *)"estimatedReward", share->share_fraction() * estimated_block_reward * (100 - CURRENT_BLOCK_REWARD_PERCENT) / 100 );
+
+			cJSON_AddNumberToObject( entry, (char *)"totalPayouts", Reward::total_paid_by_accountID( share->accountID() ) );
+
+			cJSON_AddItemToArray(historic_array, entry);
+
+			delete share;
+		}
+
+		cJSON *root = cJSON_CreateObject();
+		cJSON_AddNumberToObject( root, (char *)"block", current_block->blockID() );
+		cJSON_AddItemToObject( root, (char *)"shares", current_array );
+		cJSON_AddItemToObject( root, (char *)"historicShares", historic_array );
+
+		cJSON *current_awards = generate_awards( current_block->blockID(), current_block->first_seen_when() );
+
+		// uptime
+		cJSON_AddStringToObject( current_awards, (char *)"Uptime", Nonce::deadline_to_string( time(NULL) - started_when ).c_str() );
+
+		// reward payouts in queue
+		Reward rewards;
+		rewards.is_paid( false );
+		rewards.below_amount( MINIMUM_PAYOUT * BURST_TO_NQT );
+		uint64_t too_small = rewards.count();
+		cJSON_AddNumberToObject( current_awards, (char *)"Deferred Payouts", too_small );
+
+		rewards.clear();
+		rewards.is_paid( false );
+		uint64_t unpaid = rewards.count() - too_small;
+		cJSON_AddNumberToObject( current_awards, (char *)"Queued Payouts", unpaid );
+
+		rewards.is_paid( true );
+		rewards.is_confirmed( false );
+		cJSON_AddNumberToObject( current_awards, (char *)"Unconfirmed Payouts", rewards.count() );
+
+
+		cJSON_AddItemToObject( root, (char *)"awards", current_awards );
+
+
+		std::unique_ptr<char> json( cJSON_PrintUnformatted(root) );
+		shares_json = "SHARES:" + std::string(&*json);
+
+		cJSON_Delete(root);
+	}
+
+	WebSocket ws;
+	ws.opcode = WS_TEXT;
+
+	// do we need to send any updated account info?
+	// find accounts from all_seen_accounts that are NOT in my_seen_accounts
+	cJSON *accounts = cJSON_CreateArray();
+
+	for( seen_accounts_t::iterator it = all_seen_accounts.begin(); it != all_seen_accounts.end(); it++ ) {
+		uint64_t accountID = it->first;
+
+		if ( my_seen_accounts.find( accountID ) == my_seen_accounts.end() ) {
+			std::unique_ptr<Account> account( Account::load_or_create( accountID ) );
+
+			cJSON *account_info = cJSON_CreateObject();
+
+			cJSON_AddStringToObject( account_info, (char *)"account", account->account_RS_string().c_str() );
+			cJSON_AddStringToObject( account_info, (char *)"accountId", std::to_string(accountID).c_str() );
+			cJSON_AddNumberToObject( account_info, (char *)"accountId32", accountID & 0xFFFFFFFF );
+			cJSON_AddStringToObject( account_info, (char *)"accountName", account->account_name().c_str() );
+			cJSON_AddNumberToObject( account_info, (char *)"estimatedCapacityTB", account->estimated_capacity() / 1024.0 );
+
+			cJSON_AddItemToArray(accounts, account_info);
+
+			my_seen_accounts[ accountID ] = it->second;
+		}
+	}
+
+	if ( cJSON_GetArraySize(accounts) > 0 ) {
+		std::cout << "sock: " << sock << " sending accounts info" << std::endl;
+
+		std::unique_ptr<char> json( cJSON_PrintUnformatted(accounts) );
+		std::string accounts_json = "ACCOUNTS:" + std::string(&*json);
+
+		ws.replace_payload( (const unsigned char *)accounts_json.c_str(), accounts_json.length() );
+		if ( !send_ws(&ws) )
+			return;
+	}
+	cJSON_Delete(accounts);
+
+	if (send_block_json || need_initial_info) {
+		ws.replace_payload( (const unsigned char *)block_json.c_str(), block_json.length() );
+		if ( !send_ws(&ws) )
+			return;
+
+		need_initial_info = false;
+	}
+
+	ws.replace_payload( (const unsigned char *)shares_json.c_str(), shares_json.length() );
+	if ( !send_ws(&ws) )
+		return;
+
+	// any future code here should check bool return status of send_ws above
+}
+
+
+Handlers::webAPI::updates::updates() {
+	need_initial_info = true;
+}
+
+
+void Handlers::webAPI::updates::init() {
+	started_when = time(NULL);
+	WebSocketHandler::init();
+}

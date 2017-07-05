@@ -1,0 +1,13 @@
+/*
+		Create table Shares (
+			blockID						bigint unsigned not null,
+			accountID					bigint unsigned not null,
+			share_permille				bigint unsigned not null,
+			deadline					bigint unsigned not null,
+			deadline_string				varchar(255) not null,
+			primary key					(blockID, accountID),
+			index						(blockID, share_permille)
+		);
+*/
+
+#include "Share.cxx"

@@ -1,0 +1,24 @@
+<!doctype html> 
+<html>
+<head>
+	<script type="text/javascript" src="/js/stats.js"></script>
+	<link rel="stylesheet" type="text/css" href="/css/main.css">
+</head>
+<body>
+	<canvas id="current-shares-chart"></canvas>
+	<table id="current-shares-table">
+		<thead><tr><th>Account</th><th>Deadline</th><th>Share</th></tr></thead>
+		<tbody id="current-shares-list"></tbody>
+	</table>
+	
+	<canvas id="historic-shares-chart"></canvas>
+	<table id="historic-shares-table">
+		<thead><tr><th>Account</th><th>Share</th></tr></thead>
+		<tbody id="historic-shares-list"></tbody>
+	</table>
+	
+	<div id="current-block-info"></div>
+	
+	<canvas id="timer"></canvas>
+</body>
+</html>

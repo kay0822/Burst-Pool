@@ -1,0 +1,299 @@
+var shares = [];
+var historicShares = [];
+var currentBlockStart;
+
+
+function deadlineToString(d) {
+	var units = [ 'year', 'month', 'day', 'hour', 'minute', 'second'];
+	var unit_multipliers = [ 365*24*60*60, 30*24*60*60, 24*60*60, 60*60, 60, 1 ];
+	var ds = '';
+	for(var i=0; i<units.length; i++) {
+		if (d > unit_multipliers[i]) {
+			var n_units = Math.floor( d / unit_multipliers[i] );
+			d = d % unit_multipliers[i];
+			if (ds.length > 0) {
+				ds += ', ';
+			}
+			ds += n_units + " " + units[i];
+			if (n_units > 1) {
+				ds += 's';
+			}
+		}
+	}
+	
+	return ds;
+}
+
+
+// expecting args in range 0 to 1
+function HSVtoRGB(hue, sat, val) {
+	var var_r;
+	var var_g;
+	var var_b;
+
+	if (sat == 0) {
+		var_r = val;
+		var_g = val;
+		var_b = val;
+	} else {
+		var var_h = hue * 6;
+		var var_i = Math.floor( var_h );
+		var var_1 = val * (1 - sat);
+		var var_2 = val * (1 - sat * (var_h - var_i));
+		var var_3 = val * (1 - sat * (1 - (var_h - var_i)));
+		if (var_i==0)      {var_r=val;    var_g=var_3; var_b=var_1}
+		else if (var_i==1) {var_r=var_2; var_g=val;     var_b=var_1}
+		else if (var_i==2) {var_r=var_1; var_g=val;     var_b=var_3}
+		else if (var_i==3) {var_r=var_1; var_g=var_2; var_b=val}
+		else if (var_i==4) {var_r=var_3; var_g=var_1; var_b=val}
+		else               {var_r=val;     var_g=var_1; var_b=var_2}
+	}
+
+	var_r = Math.round(var_r*255);   //RGB results = From 0 to 255
+	var_g = Math.round(var_g*255);
+	var_b = Math.round(var_b*255);
+
+	return new Array(var_r, var_g, var_b);
+}
+
+
+function RGBArrayToString(rgb) {
+	var s = '';
+	for (var i=0; i<3; i++) {
+		var b = parseInt(rgb[i]).toString(16);
+		if (b.length < 2) {
+			b = '0' + b;
+		}
+
+		s = s + b;
+	}
+
+	return s;
+}
+
+
+function renderPieChart( id, shares, text ) {
+	var canvas = document.getElementById(id);
+	canvas.setAttribute('width', canvas.clientWidth);
+	canvas.setAttribute('height', canvas.clientHeight);
+	var context = canvas.getContext('2d');
+	context.clearRect(0, 0, canvas.width, canvas.height);
+
+	var midX = canvas.width / 2;
+	var midY = canvas.height / 2;
+	var radius = midX; // assuming square canvas
+	var startAngle = 0 - Math.PI / 2;
+	var endAngle;
+
+	for(var i=0; i<shares.length; i++) {
+		endAngle = startAngle + (shares[i].share / 1000 * 2 * Math.PI);
+
+		context.beginPath();
+		context.moveTo( midX, midY );
+		context.arc(midX, midY, radius, startAngle, endAngle, false);
+		context.closePath();
+		context.fillStyle = shares[i].background;
+		context.fill();
+		
+		startAngle = endAngle;
+	}
+
+	context.font = '200px';
+	context.fillStyle = 'black';
+	context.textAlign = 'center';
+	context.lineWidth = 1;
+	strokeMultilineText( context, text, midX, midY );
+}
+
+
+function appendTD(tr, content) {
+	var td = document.createElement('TD');
+	td.appendChild( document.createTextNode(content) );
+	tr.appendChild(td);
+}
+
+
+function sharesUpdate( json ) {
+	var shareInfo;
+	eval('shareInfo = ' + json);
+
+	if (shareInfo.block) {
+		shares = shareInfo.shares;
+		var currentList = document.getElementById('current-shares-list');
+		currentList.innerHTML = '';
+
+		for(var i=0; i<shares.length; i++) {
+			var share = shares[i];
+			var h = (share.accountId32 & 0x0000ff) / 256.0;
+			var s = (share.accountId32 & 0x00ff00) / 256.0 / 256.0 / 2.0;
+			var v = (share.accountId32 & 0xff0000) / 256.0 / 256.0 / 256.0 / 4.0 + 0.75;
+			// console.log("accountId " + shares[i].accountId32 + "(" + shares[i].account + ") maps to HSV: " + h + ", " + s + ", " + v);
+			share.background = '#' + RGBArrayToString( HSVtoRGB(h, s, v) );
+			share.color = 'black';
+			
+			var entry = document.createElement('TR');
+			entry.style.background = share.background;
+			
+			appendTD(entry, share.account);
+			appendTD(entry, share.deadlineString);
+			appendTD(entry, (share.share / 10).toFixed(1) + '%');
+
+			currentList.appendChild(entry);
+		}
+		
+		historicShares = shareInfo.historicShares;
+		var historicList = document.getElementById('historic-shares-list');
+		historicList.innerHTML = '';
+		for(var i=0; i<historicShares.length; i++) {
+			var share = historicShares[i];
+			var h = (share.accountId32 & 0x0000ff) / 256.0;
+			var s = (share.accountId32 & 0x00ff00) / 256.0 / 256.0 / 2.0;
+			var v = (share.accountId32 & 0xff0000) / 256.0 / 256.0 / 256.0 / 4.0 + 0.75;
+			// console.log("accountId " + shares[i].accountId32 + "(" + shares[i].account + ") maps to HSV: " + h + ", " + s + ", " + v);
+			share.background = '#' + RGBArrayToString( HSVtoRGB(h, s, v) );
+
+			var entry = document.createElement('TR');
+			entry.style.background = share.background;
+			
+			appendTD(entry, share.account);
+			appendTD(entry, (share.share / 10).toFixed(1) + '%');
+
+			historicList.appendChild(entry);
+		}
+		
+		renderPieChart('current-shares-chart', shares, 'Current block share');
+		renderPieChart('historic-shares-chart', historicShares, 'Historic block share');
+	}
+}
+
+
+function blockUpdate( block ) {
+	console.log("New block: " + block);
+	shares = [];
+	renderPieChart('current-shares-chart', shares, 'Current block share');
+	var list = document.getElementById('current-shares-list');
+	list.innerHTML = '';
+	var blockInfo = document.getElementById('current-block-info');
+	blockInfo.innerHTML = 'Block: ' + block;
+	
+	currentBlockStart = new Date();
+}
+
+
+var ws;
+function grabPoolUpdates() {
+	ws = new WebSocket('ws://' + window.location.host + '/webAPI/updates', 'updates');
+	
+	ws.onmessage = function(e) {
+		console.log(e);
+		if (e.data) {
+			if ( e.data.substr(0, 7) == 'SHARES:' ) {
+				sharesUpdate( e.data.substr(7) );
+			} else if (e.data.substr(0, 6) == 'BLOCK:' ) {
+				blockUpdate( e.data.substr(6) );
+			}
+		}
+	};
+	
+	ws.onopen = function(e) {
+		ws.send("Update!");
+	};
+}
+
+
+function strokeMultilineText( context, text, x, y ) {
+	var lines = text.split(/\n/);
+	for(var i=0; i<lines.length; i++) {
+		var line = lines[i];
+		context.strokeText(line, x, y);
+		var span = document.createElement('SPAN');
+		span.style.visibility = 'hidden';
+		span.appendChild( document.createTextNode( line ) );
+		document.body.appendChild(span);
+		y += span.offsetHeight;
+		span.parentNode.removeChild(span);
+	}
+}
+
+
+function renderTimer() {
+	if (currentBlockStart) {
+		var canvas = document.getElementById('timer');
+		canvas.setAttribute('width', canvas.clientWidth);
+		canvas.setAttribute('height', canvas.clientHeight);
+		var context = canvas.getContext('2d');
+		context.clearRect(0, 0, canvas.width, canvas.height);
+		
+		// we need at least one share
+		if ( shares.length > 0 ) {
+			var deadline = shares[0].deadline;
+			var secondsSoFar = (new Date() - currentBlockStart) / 1000;
+			var secondsToGo = deadline - secondsSoFar;
+			// console.log("deadline: " + deadline + ", so far: " + secondsSoFar + ", to go: " + secondsToGo);
+			
+			var midX = canvas.width / 2;
+			var midY = canvas.height / 2;
+
+			// upper bulb is seconds to go
+			context.beginPath();
+			// centre
+			context.moveTo( midX, midY );
+			// top-left
+			context.lineTo( midX - midX * secondsToGo / deadline, midY - midY * secondsToGo / deadline );
+			// top-right
+			context.lineTo( midX + midX * secondsToGo / deadline, midY - midY * secondsToGo / deadline );
+			// centre
+			context.lineTo( midX, midY );
+			context.closePath();
+			context.fillStyle = 'red';
+			context.fill();
+			
+			// lower bulb is seconds so far
+			context.beginPath();
+			// bottom-left
+			context.moveTo( 0, midY * 2 );
+			// bottom-top
+			context.lineTo( midX * 2, midY * 2 );
+			// top
+			context.lineTo( midX, midY * 2 - midY * secondsSoFar / deadline ); 
+			// bottom-left
+			context.lineTo( 0, midY * 2);
+			context.closePath();
+			context.fillStyle = 'green';
+			context.fill();
+			
+			// draw bulbs
+			context.beginPath();
+			// top-left
+			context.moveTo( 0, 0 );
+			// top-right
+			context.lineTo( midX * 2, 0 );
+			// centre
+			context.lineTo( midX + 4, midY );
+			// bottom-right
+			context.lineTo( midX * 2, midY * 2 );
+			// bottom-left
+			context.lineTo( 0, midY * 2 );
+			// centre 
+			context.lineTo( midX - 4, midY );
+			// top-left
+			context.lineTo( 0, 0 );
+			context.closePath();
+			context.lineWidth = 4;
+			context.strokeStyle = 'black';
+			context.stroke();
+			
+			// write times into bulbs
+			context.font = '60px';
+			context.fillStyle = 'black';
+			context.textAlign = 'center';
+			context.lineWidth = 1;
+			strokeMultilineText( context, deadlineToString(secondsToGo).replace(/, /g, "\n"), midX, midY * 0.25 );
+			strokeMultilineText( context, deadlineToString(secondsSoFar).replace(/, /g, "\n"), midX, midY * 1.75 );
+		}
+	}
+}
+
+
+window.addEventListener( 'load', grabPoolUpdates, false );
+window.setInterval( renderTimer, 1000 );

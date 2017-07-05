@@ -1,0 +1,54 @@
+#ifndef __CONFIG__HPP__
+#define __CONFIG__HPP__
+
+#define BURST_SERVER "5.153.225.55:8125"
+
+#define DB_POOL_SIZE 4
+
+#ifndef DEV_MODE
+
+#define BIND_ADDRESS "5.153.225.55"
+#define LISTEN_PORT 8124
+#define DB_URI "unix:///tmp/mysql.sock"
+#define DOC_ROOT "/home/burstpool/static"
+#define LOG_FILE "/home/burstpool/server.log"
+
+#else
+
+#define BIND_ADDRESS "0.0.0.0"
+#define LISTEN_PORT 9876
+#define DB_URI "unix:///tmp/mysql.sock"
+#define DOC_ROOT "/home/burstcoin/dompool/static"
+#define LOG_FILE "/home/burstcoin/dompool/server.log"
+
+#endif
+
+#define DB_NAME "burstpool"
+#define DB_USERNAME "pool"
+#define DB_PASSWORD "pool"
+
+#include "base.hpp"
+#define HANDLER_SUPERCLASS Handlers::base
+
+#include "extra_stuff.hpp"
+#define EXTRA_CLASS extra_stuff
+
+#ifndef GET_EXTRA
+#define GET_EXTRA EXTRA_CLASS *extra = (EXTRA_CLASS *) req->extra; if (!extra) std::cerr << "GET_EXTRA returned NULL!\n" << std::endl
+#endif
+
+// reducing finger pain:
+#ifndef STRTOUL
+#define STRTOUL(STR) strtoul( (STR).c_str(), NULL, 10 )
+#endif
+
+#ifndef STRTOD
+#define STRTOD(STR) strtod( (STR).c_str(), NULL )
+#endif
+
+// JSON stuff
+#ifndef JSON_ERROR
+#define JSON_ERROR(ERRNUM,ERRDESC) "{\"errorCode\":" + std::to_string(ERRNUM) + ",\"errorDescription\":\"" ERRDESC + std::string("") + "\"}"
+#endif
+
+#endif

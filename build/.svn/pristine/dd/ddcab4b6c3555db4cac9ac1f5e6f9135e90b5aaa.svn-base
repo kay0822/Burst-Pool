@@ -1,0 +1,94 @@
+HTML, BODY {
+	width:			100%;
+	height:			100%;
+	border:			0px;
+	padding:		0px;
+	margin:			0px;
+}
+
+BODY {
+	background:		radial-gradient(circle at 30% 50%,#888,#222);
+}
+
+
+.shares-table {
+	position:		absolute;
+	height:			auto;
+	overflow-y:		scroll;
+	font-size:		smaller;
+	border:			2px solid black;
+	border-radius:	8px;
+	padding:		2px;
+	width:			500px;
+}
+
+.shares-table CAPTION {
+	background:		#ccc;
+	color:			white;
+	font-weight:	bold;
+}
+
+#current-shares-chart {
+	position:		absolute;
+	width:			500px;
+	height:			500px;
+	left:			200px;
+	top:			0px;
+}
+
+#current-shares-graph {
+	position:		absolute;
+	width:			500px;
+	height:			500px;
+	left:			200px;
+	top:			0px;
+}
+
+#current-shares-table {
+	left:			200px;
+	top:			520px;
+	bottom:			0px;
+}
+
+#historic-shares-chart {
+	position:		absolute;
+	width:			500px;
+	height:			500px;
+	top:			0px;
+	right:			0px;
+}
+
+#historic-shares-table {
+	right:			0px;
+	top:			520px;
+	bottom:			0px;
+}
+
+#current-block-info {
+	position:		absolute;
+	width:			160px;
+	height:			20pt;
+	left:			20px;
+	top:			20px;
+	border:			2px solid black;
+	border-radius:	8px;
+	padding:		2px;
+	text-align:		center;
+	background:		#ccc;
+	color:			white;
+	font-weight:	bold;
+	font-size:		20pt;
+}
+
+#timer {
+	position:		absolute;
+	width:			180px;
+	height:			400px;
+	top:			100px;
+	left:			0px;
+}
+
+#awards-table {
+	right:			720px;
+	top:			0px;
+}

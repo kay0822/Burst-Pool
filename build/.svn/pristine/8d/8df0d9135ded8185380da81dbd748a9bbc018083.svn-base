@@ -1,0 +1,49 @@
+include ../build/gmake/handlers.gmk
+
+LIBS+= curl boost_iostreams gnutls crypto gcrypt
+
+BASE_HANDLERS=${shell find * -prune -type f -name '*.cpp' -print | fgrep -v base.cpp | fgrep -v remote.cpp | fgrep -v blockchain_monitor.cpp }
+API_HANDLERS:=${shell find API -type f -name '*.cpp' -print }
+WEBAPI_HANDLERS:=${shell find webAPI -type f -name '*.cpp' -print }
+
+${OUTPUT_DIR}/handlers.hxx: ${OUTPUT_DIR}/base-handlers.cxx ${OUTPUT_DIR}/API-handlers.cxx ${OUTPUT_DIR}/webAPI-handlers.cxx
+
+${OUTPUT_DIR}/base-handlers.cxx: ${BASE_HANDLERS}
+	@echo '--> Making list of base handlers'
+	@rm -f $@
+	@for handler_path in ${BASE_HANDLERS:.cpp=}; do \
+		handler=`echo $$handler_path | sed 's/\//::/g'`; \
+		printf 'RegistryHandler::register_handler<%s>( "/%s" );\n' $$handler $$handler_path >> $@; \
+	done 
+
+${OUTPUT_DIR}/API-handlers.cxx: ${API_HANDLERS}
+	@echo '--> Making list of API handlers'
+	@rm -f $@
+	@for handler_path in ${API_HANDLERS:.cpp=}; do \
+		handler=`echo $$handler_path | sed 's/\//::/g'`; \
+		printf 'RegistryHandler::register_handler<%s>( "/%s" );\n' $$handler $$handler_path >> $@; \
+	done 
+
+${OUTPUT_DIR}/webAPI-handlers.cxx: ${WEBAPI_HANDLERS}
+	@echo '--> Making list of webAPI handlers'
+	@rm -f $@
+	@for handler_path in ${WEBAPI_HANDLERS:.cpp=}; do \
+		handler=`echo $$handler_path | sed 's/\//::/g'`; \
+		printf 'RegistryHandler::register_handler<%s>( "/%s" );\n' $$handler $$handler_path >> $@; \
+	done 
+
+LIBS+=md boost_regex
+
+${OUTPUT_DIR}/base.o: ${OUTPUT_DIR}/handlers.hxx
+${OUTPUT_DIR}/server: shabal.o ${OUTPUT_DIR}/base.o
+
+shabal.o: shabal.h shabal-stripped.s
+	c++ -g -c -o shabal.o shabal-stripped.s
+
+shabal-stripped.s: shabal.s
+	grep -v '^\s*\#' shabal.s > shabal-stripped.s
+
+
+.depend: ${STAFF_HANDLERS} ${CUSTOMER_HANDLERS} base.cpp 
+	${CXX} -E -MM ${INCLUDE_DIRS} $^ > $@
+

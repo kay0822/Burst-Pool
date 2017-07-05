@@ -1,0 +1,48 @@
+#include <list>
+#include <boost/thread.hpp>
+
+template <class THING>
+class Pool {
+	private:
+		bool is_empty;
+		std::list<THING> pool;
+		boost::mutex mtx;
+		boost::condition_variable cond;
+
+	public:
+		THING request() {
+			// blocking
+			boost::unique_lock<boost::mutex> empty_lock(mtx);
+			
+			while(is_empty) {
+				cond.wait( empty_lock );
+			}
+			
+			THING result = pool.front();
+			pool.pop_front();
+			is_empty = pool.empty();
+			cond.notify_one();
+			return result;
+		};
+
+		void release(THING thing) {
+			boost::lock_guard<boost::mutex> empty_lock(mtx);
+			
+			pool.push_back( thing );
+			is_empty = pool.empty();
+			cond.notify_one();
+		};
+	
+		void add(THING thing) {
+			boost::lock_guard<boost::mutex> empty_lock(mtx);
+			
+			pool.push_front( thing );
+			is_empty = pool.empty();
+			cond.notify_one();
+		};
+		
+		bool empty() {
+			return is_empty;
+		};
+		
+};

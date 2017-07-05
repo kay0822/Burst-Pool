@@ -1,0 +1,231 @@
+#include <stdint.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <signal.h>
+
+#include "server.hpp"
+#include "ftime.hpp"
+#include "config_loader.hpp"
+#include "config.hpp"
+#include "database.hpp"
+#include "remote.hpp"
+#include "mining-info.hpp"
+
+#include "Block.hpp"
+#include "Nonce.hpp"
+
+#include "blockchain_common.hpp"
+
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+static volatile bool time_to_die = false;
+
+
+// bleh this shouldn't be here
+Handler *handler_factory() { return NULL; }
+
+
+static void reward_miners() {
+	while(!time_to_die) {
+		uint64_t latest_blockID = Block::latest_blockID();
+
+		// Blocks 4 or more older than current
+		// with has_been_shared == false
+		Block blocks;
+		blocks.before_blockID( latest_blockID - 4 + 1);
+		blocks.has_been_shared( false );
+		blocks.is_our_block( true );
+		blocks.search();
+
+		while( Block *block = blocks.result() ) {
+			std::cout << ftime() << "Generating rewards for block " << block->blockID() << std::endl;
+
+			block->reward_miners();
+
+			delete block;
+		}
+
+		// find out if there are more forged blocks in the pipeline
+		Block more_blocks;
+		more_blocks.after_blockID( latest_blockID - 4 );
+		more_blocks.is_our_block(true);
+		int more_forged_to_come = more_blocks.count();
+
+		// check pool balance
+		std::string json = fetch( "http://" + BURST_SERVER + "/burst?requestType=getAccount&account=" + std::to_string(OUR_ACCOUNT_ID) );
+
+		uint64_t balance = safe_strtoull( qJSON( json, "unconfirmedBalanceNQT" ) );
+
+		if (balance > 0) {
+			std::cout << ftime() << "Pool balance: " << (double)balance/BURST_TO_NQT << std::endl;
+
+			std::map<uint64_t, uint64_t> total_by_accountID;
+			std::map<uint64_t, std::vector<Reward *> > rewards_by_accountID;
+
+			// transaction so we pick up a snapshot of unpaid rewards
+			// and not any rewards being unconfirmed by reward-confirmer thread, which would screw up calculations
+			IO::Object::start_transaction();
+
+			Reward rewards;
+			rewards.is_paid(false);
+			rewards.search();
+
+			uint64_t total_found = 0;
+			while( Reward *reward = rewards.result() ) {
+				// std::cout << ftime() << " Unpaid reward for block " << reward->blockID() << " of " << (double)reward->amount()/BURST_TO_NQT << " for account " << reward->accountID() << std::endl;
+
+				total_found += reward->amount();
+
+				if ( total_by_accountID.find( reward->accountID() ) == total_by_accountID.end() )
+					total_by_accountID[ reward->accountID() ] = 0;
+
+				total_by_accountID[ reward->accountID() ] += reward->amount();
+				rewards_by_accountID[ reward->accountID() ].push_back(reward);
+			}
+
+			IO::Object::commit();
+
+			total_found += total_by_accountID.size() * PAYMENT_SEND_FEE;
+
+			uint64_t total_to_pay = 0;
+			// total up but filter out payouts that are too small
+			auto account_total_it = total_by_accountID.begin();
+			while( account_total_it != total_by_accountID.end() ) {
+				// total for this account?
+				bool too_small = account_total_it->second < ( MINIMUM_PAYOUT * BURST_TO_NQT );
+				bool too_late = rewards_by_accountID[account_total_it->first][0]->blockID() < (latest_blockID - MAX_PAYOUT_BLOCK_DELAY);
+
+				if ( !too_small || too_late  ) {
+					total_to_pay += account_total_it->second;
+					// std::cout << ftime() << "Total to pay now: " << (double)total_to_pay/BURST_TO_NQT << std::endl;
+					// next one then
+					account_total_it++;
+				} else {
+					// std::cout << ftime() << "Total " << (double)account_total_it->second/BURST_TO_NQT << " for accountID " << account_total_it->first << " less than mininum " << MINIMUM_PAYOUT << std::endl;
+
+					// remove payments
+					for( auto reward : rewards_by_accountID[ account_total_it->first ] )
+						delete reward;
+
+					rewards_by_accountID.erase( account_total_it->first );
+					total_by_accountID.erase(account_total_it);
+					// start again!
+					account_total_it = total_by_accountID.begin();
+					total_to_pay = 0;
+				}
+			}
+
+			// transaction fees
+			total_to_pay += total_by_accountID.size() * PAYMENT_SEND_FEE;
+
+			if (balance < total_to_pay) {
+				std::cout << ftime() << "Pool balance " << (double)balance/BURST_TO_NQT << " is less than unpaid rewards + fees " << (double)total_to_pay/BURST_TO_NQT << "?" << std::endl;
+				goto reward_exit;
+			} else {
+				std::cout << ftime() << "Pool balance: " << (double)balance/BURST_TO_NQT << ", unpaid rewards + fees: " << (double)total_to_pay/BURST_TO_NQT << std::endl;
+			}
+
+			bool all_paid = true;
+			for(auto pair : total_by_accountID) {
+				uint64_t amount = 0;
+				std::string message = "Blocks: ";
+
+				for(auto reward : rewards_by_accountID[ pair.first ] ) {
+					amount += reward->amount();
+					message += std::to_string( reward->blockID() ) + ",";
+				}
+				message.pop_back();
+
+				uint64_t tx_id = send_pool_money( pair.first, amount, message );
+
+				if ( tx_id ) {
+					for(auto reward : rewards_by_accountID[ pair.first ] ) {
+						reward->is_paid(true);
+						reward->tx_id( tx_id );
+						reward->paid_at_block_id( latest_blockID );
+						reward->save();
+					}
+
+					std::cout << ftime() << "Payment made OK. TX ID: " << tx_id << std::endl;
+
+					balance -= pair.second - PAYMENT_SEND_FEE;
+				} else {
+					std::cout << ftime() << "Payment failed?" << std::endl;
+					all_paid = false;
+				}
+
+				for(auto reward : rewards_by_accountID[ pair.first ] )
+					delete reward;
+			}
+
+			std::cout << ftime() << "Payment batch finished" << std::endl;
+
+			Reward unconfirmed_rewards;
+			unconfirmed_rewards.is_paid(true);
+			unconfirmed_rewards.is_confirmed(false);
+
+			bool all_confirmed = unconfirmed_rewards.count() == 0;
+
+			uint64_t total_deferred = total_found - total_to_pay;
+			if (balance > total_deferred)
+				balance -= total_deferred;
+			else
+				balance = 0;
+
+			std::cout << ftime() << "Total deferred: " << (double)total_deferred/BURST_TO_NQT << ", leaving balance: " << (double)balance/BURST_TO_NQT << std::endl;
+
+			if (all_paid && all_confirmed && balance > PAYMENT_SEND_FEE && more_forged_to_come == 0) {
+				std::cout << ftime() << "Leftover balance " << (double)balance/BURST_TO_NQT << " going to pool fee account" << std::endl;
+				send_pool_money( POOL_FEE_ACCOUNTID, balance - PAYMENT_SEND_FEE );
+			} else {
+				if (!all_paid)
+					std::cout << ftime() << "Not everyone was paid?" << std::endl;
+				if (!all_confirmed)
+					std::cout << ftime() << "Not all payments are confirmed?" << std::endl;
+				if (balance <= PAYMENT_SEND_FEE)
+					std::cout << ftime() << "Not enough leftover balance to be worth sending!" << std::endl;
+				if (more_forged_to_come > 0)
+					std::cout << ftime() << "More potentially forged blocks in the pipeline - not slurping leftover balance to pool fee account." << std::endl;
+			}
+
+		}
+
+		reward_exit:
+
+		sleep(3);
+	}
+}
+
+
+static void handle_signal(int sig) {
+	std::cout << ftime() << "!!! Received sig " << sig << " !!!" << std::endl;
+	time_to_die = true;
+}
+
+
+int main() {
+	close(0);
+
+	config_init();
+
+	std::cout << ftime() << "--- START ---" << std::endl;
+
+	database_init();
+
+	signal( SIGCHLD, SIG_IGN );
+	signal( SIGINT, handle_signal );
+	signal( SIGTERM, handle_signal );
+
+	IDB::Engine *idb = make_db_connection();
+	IO::Object::set_engine( idb );
+
+	reward_miners();
+
+	std::cout << ftime() << "--- STOP ---" << std::endl;
+
+	return 0;
+}

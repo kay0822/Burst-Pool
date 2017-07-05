@@ -1,0 +1,49 @@
+<!doctype html> 
+<html>
+<head>
+	<script type="text/javascript" src="/js/stats.js"></script>
+	<link href='http://fonts.googleapis.com/css?family=Roboto:400,300italic,300,100italic,100,400italic,500' rel='stylesheet' type='text/css'>
+	<link rel="stylesheet" type="text/css" href="/css/main.css">
+</head>
+<body>
+
+	<canvas id="current-shares-chart"></canvas>
+	<div id="current-shares-graph"></div>
+	
+	<table id="current-shares-table" class="shares-table">
+		<caption>Current Shares</caption>
+		<thead><tr><th>Account</th><th>Deadline</th><th>Share</th><th>~Reward</th></tr></thead>
+		<tbody id="current-shares-list"></tbody>
+	</table>
+	
+	<div id="current-block-info">
+		Block: <span id="current-block-num"></span><br>
+		BURST-BANK-DT2R-BM8G-FYFRH<br>
+		[<a href="http://127.0.0.1:8125/rewardassignment.html" target="_blank">Set reward assignment...</a>]
+	</div>
+	
+	<canvas id="timer"></canvas>
+
+	<canvas id="historic-shares-chart"></canvas>
+	<table id="historic-shares-table" class="shares-table">
+		<caption>Historic Shares</caption>
+		<thead><tr><th>Account</th><th>~Capacity</th><th>Share</th><th>~Reward</th><th>Total Earned</th></tr></thead>
+		<tbody id="historic-shares-list"></tbody>
+	</table>
+	
+	<table id="awards-table" class="shares-table">
+		<caption>Previous Block Awards</caption>
+		<thead><tr><th>Award</th><th>Account</th></tr></thead>
+		<tbody id="awards-list"></tbody>
+	</table>
+	
+	<div id="recent-blocks-container">
+		<table id="recent-blocks-table">
+			<caption>Recent Blocks</caption>
+			<thead><tr><th>Block</th><th>Forged By</th><th>Our Best Miner</th></tr></thead>
+			<tbody id="recent-blocks-list"></tbody>
+		</table>
+	</div>
+		
+</body>
+</html>

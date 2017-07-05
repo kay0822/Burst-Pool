@@ -1,0 +1,198 @@
+#include <IDB/IDB.h>
+#include <vector>
+#include <map>
+#include <sstream>
+#include "Object.h"
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+namespace IO {
+	const std::string Object::order_direction_names[] = { "asc", "desc" };
+
+	Object::Object() {
+		// common search variables
+		search_limit = 0;
+		search_offset = 0;
+	}
+
+
+	Object::~Object() {
+	};
+
+
+	void idbe_ptr_cleanup( IDB::Engine *ptr ) {
+		// don't call delete on IDB::Engine pointer because it might be put back into a pool
+	};
+
+
+	boost::thread_specific_ptr<IDB::Engine> *Object::idbe_ptr = new boost::thread_specific_ptr<IDB::Engine>( &idbe_ptr_cleanup );
+
+
+	void Object::set_engine( IDB::Engine *idbe ) {
+		idbe_ptr->reset( idbe );
+	};
+
+
+	boost::thread_specific_ptr<bool> *Object::read_only_ptr = new boost::thread_specific_ptr<bool>();
+
+
+	void Object::set_read_only( bool read_only ) {
+		bool *new_value = new bool( read_only );
+		read_only_ptr->reset( new_value );
+	};
+
+
+	int Object::start_transaction() {
+		return idbe()->execute( "START TRANSACTION" );
+	};
+
+
+	void Object::commit() {
+		idbe()->execute( "COMMIT" );
+	};
+	
+
+	void Object::rollback() {
+		idbe()->execute( "ROLLBACK" );
+	};
+
+
+	void Object::save() {
+		this->_save();
+	};
+
+
+	void Object::delete_obj() {
+		this->_delete_obj();
+	};
+
+
+	unsigned long long int Object::limit() {
+		return search_limit;
+	};
+
+
+	void Object::limit( unsigned long long int new_limit ) {
+		search_limit = new_limit; 
+	};
+	
+
+	unsigned long long int Object::offset() {
+		return search_offset;
+	};
+
+
+	void Object::offset( unsigned long long int new_offset ) {
+		search_offset = new_offset; 
+	};
+
+	
+	unsigned long long int Object::search() { return this->search(IDB_NO_OPTIONS, (std::vector<IO::Object *> *) NULL); };
+	
+	unsigned long long int Object::search( IDB::Options *options ) { return this->search(options, (std::vector<IO::Object *> *) NULL); };
+	
+	unsigned long long int Object::search( IDB::Options *options, IO::Object *additional ) {
+		std::vector<IO::Object *> small_vector;
+		small_vector.push_back( additional );
+		return this->search(options, &small_vector);
+	};
+	
+	unsigned long long int Object::search( IDB::Options *options, std::vector<IO::Object *> *additional ) {
+		if (results)
+			delete results;
+			
+		results = NULL;
+	
+		IO::PreppedSearch *ps = this->search_prep(options, additional);
+	
+		// mySQL ONLY!
+		// XXX bit nasty
+		ps->cols->at(0) = std::string("SQL_CALC_FOUND_ROWS ") + ps->cols->at(0);
+	
+		results = idbe()->select(ps->cols, ps->tables, ps->where, ps->options);
+	
+		delete ps;
+		
+		unsigned long long int found_rows = idbe()->fetchInt( "found_rows()", IDB_NO_TABLES, IDB_NO_WHERE, IDB_NO_OPTIONS );
+	
+		return found_rows;
+	};
+	
+
+	unsigned long long int Object::count() { 
+		return this->count( IDB_NO_OPTIONS, (std::vector<IO::Object *> *) NULL );
+	};
+
+
+	unsigned long long int Object::count( IDB::Options *options, std::vector<IO::Object *> *additional ) {
+		// count is the same as search but limited to one row and returns only found_rows()
+		unsigned long long int backup_limit = search_limit;
+		unsigned long long int backup_offset = search_offset;
+
+		search_limit = 1;
+		search_offset = 0;
+
+		unsigned long long int found_rows = this->search( options, additional );
+
+		search_limit = backup_limit;
+		search_offset = backup_offset;
+
+		return found_rows;
+	};
+
+
+	PreppedSearch *Object::search_prep() { 
+		return this->search_prep( IDB_NO_OPTIONS, (std::vector<IO::Object *> *) NULL );
+	};
+
+
+	PreppedSearch *Object::search_prep( IDB::Options *options, IO::Object *additional ) {
+		std::vector<IO::Object *> small_vector;
+		small_vector.push_back( additional );
+		return this->_search_prep(options, &small_vector);
+	};
+	
+	
+	PreppedSearch *Object::search_prep( IDB::Options *options, std::vector<IO::Object *> *additional ) {
+		return this->_search_prep( options, additional );
+	};
+
+
+	void Object::search_and_destroy() {
+		return this->search_and_destroy( IDB_NO_OPTIONS, 0 );
+	}
+
+	void Object::search_and_destroy( IDB::Options *options, std::vector<IO::Object *> *additional ) {
+		this->search( options, additional );
+
+		while( Object *victim = this->result() ) {
+			victim->delete_obj();
+			delete victim;
+		}
+	}
+
+	unsigned int Object::get_lock( std::string lock, double timeout ) {
+		std::string col;
+		std::ostringstream ss;
+
+		col = "get_lock('" + lock + "', ";
+		ss << timeout;
+		col += ss.str();
+		col += ")";
+
+		return idbe()->fetchInt( col, IDB_NO_TABLES, IDB_NO_WHERE, IDB_NO_OPTIONS );
+	};
+
+
+	void Object::release_lock( std::string lock ) {
+		std::string col;
+		
+		col = "release_lock('" + lock + "')";
+
+		idbe()->fetchInt( col, IDB_NO_TABLES, IDB_NO_WHERE, IDB_NO_OPTIONS );
+	};
+
+};

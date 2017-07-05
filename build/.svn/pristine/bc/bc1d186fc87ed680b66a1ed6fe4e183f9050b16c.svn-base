@@ -1,0 +1,44 @@
+/*
+		Create table Rewards (
+			blockID						bigint unsigned not null,
+			accountID					bigint unsigned not null,
+			amount						bigint unsigned not null,
+			is_paid						boolean not null default false,
+			message						varchar(255),
+			primary key					(blockID, accountID),
+			index						(is_paid, accountID, blockID)
+		);
+*/
+
+#include "Reward.cxx"
+
+
+STATIC uint64_t Reward::total_unpaid() {
+	Reward rewards;
+	rewards.is_paid(false);
+	rewards.search();
+
+	uint64_t total = 0;
+	while( Reward *reward = rewards.result() ) {
+		total += reward->amount();
+		delete reward;
+	}
+
+	return total;
+}
+
+
+STATIC uint64_t Reward::total_paid_by_accountID( uint64_t accountID ) {
+	Reward rewards;
+	rewards.is_paid(true);
+	rewards.accountID(accountID);
+	rewards.search();
+
+	uint64_t total = 0;
+	while( Reward *reward = rewards.result() ) {
+		total += reward->amount();
+		delete reward;
+	}
+
+	return total;
+}

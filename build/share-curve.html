@@ -1,0 +1,176 @@
+<html>
+<head>
+	<script>
+		var MAX_DEADLINES = 25;
+		var MAX_DEADLINE = 5 * 24 * 60 * 60;
+		var deadlines = [];
+		var shares = [];
+		
+		function deadlineToString(d) {
+			var units = [ 'year', 'month', 'day', 'hour', 'minute', 'second'];
+			var unit_multipliers = [ 365*24*60*60, 30*24*60*60, 24*60*60, 60*60, 60, 1 ];
+			var ds = '';
+			for(var i=0; i<units.length; i++) {
+				if (d > unit_multipliers[i]) {
+					var n_units = Math.floor( d / unit_multipliers[i] );
+					d = d % unit_multipliers[i];
+					if (ds != "") {
+						ds += ', ';
+					}
+					ds += n_units + " " + units[i];
+					if (n_units > 1) {
+						ds += 's';
+					}
+				}
+			}
+			
+			return ds;
+		}
+		
+		function generateDeadlines() {
+			deadlines = [];
+			
+			for(var i=0; i<20+Math.random()*MAX_DEADLINES; i++) {
+				var deadline = Math.floor( Math.random() * MAX_DEADLINE );
+				deadlines.push( deadline );
+			}
+		}
+	
+		function calculateShares() {
+			shares = [];
+			
+			var total_deadlines = 0;
+			
+			for(var i=0; i<deadlines.length; i++) {
+				total_deadlines += deadlines[i];
+			}
+			
+			var pre = document.getElementById('shares');
+			pre.innerHTML = '';
+			
+			var total_shares = 0;
+			
+			for(var i=0; i<deadlines.length; i++) {
+				shares[i] = total_deadlines / deadlines[i];
+				total_shares += shares[i];
+			}
+
+			for(var i=0; i<deadlines.length; i++) {
+				shares[i] = ( (shares[i] / total_shares)) * 100;
+				pre.appendChild( document.createTextNode( shares[i].toFixed(2) + "%\n" ) );
+			}
+		}
+		
+		// expecting args in range 0 to 1
+		function HSVtoRGB(hue, sat, val) {
+			var var_r;
+			var var_g;
+			var var_b;
+
+			if (sat == 0) {
+				var_r = val;
+				var_g = val;
+				var_b = val;
+			} else {
+				var var_h = hue * 6;
+				var var_i = Math.floor( var_h );
+				var var_1 = val * (1 - sat);
+				var var_2 = val * (1 - sat * (var_h - var_i));
+				var var_3 = val * (1 - sat * (1 - (var_h - var_i)));
+				if (var_i==0)      {var_r=val;    var_g=var_3; var_b=var_1}
+				else if (var_i==1) {var_r=var_2; var_g=val;     var_b=var_1}
+				else if (var_i==2) {var_r=var_1; var_g=val;     var_b=var_3}
+				else if (var_i==3) {var_r=var_1; var_g=var_2; var_b=val}
+				else if (var_i==4) {var_r=var_3; var_g=var_1; var_b=val}
+				else               {var_r=val;     var_g=var_1; var_b=var_2}
+			}
+
+			var_r = Math.round(var_r*255);   //RGB results = From 0 to 255
+			var_g = Math.round(var_g*255);
+			var_b = Math.round(var_b*255);
+
+			return new Array(var_r, var_g, var_b);
+		}
+
+		function RGBArrayToString(rgb) {
+			var s = '';
+			for (var i=0; i<3; i++) {
+				var b = parseInt(rgb[i]).toString(16);
+				if (b.length < 2) {
+					b = '0' + b;
+				}
+
+				s = s + b;
+			}
+
+			return s;
+		}
+
+		function render() {
+			deadlines = deadlines.sort(function(a, b){return a-b});
+			
+			var pre = document.getElementById('deadlines');
+			pre.innerHTML = '';
+			
+			for(var i=0; i<deadlines.length; i++) {
+				var span = document.createElement('SPAN');
+				span.style.background = '#' + RGBArrayToString( HSVtoRGB( i / deadlines.length, 1, 1) );
+				span.appendChild( document.createTextNode( deadlines[i] + ": " + deadlineToString(deadlines[i]) + "\n" ) );
+				pre.appendChild(span);
+			}
+
+			var curve = document.getElementById('curve');
+			var context = curve.getContext('2d');
+			var pixel = context.createImageData(1,1);
+
+			calculateShares();
+			
+			var midX = curve.width / 2;
+			var midY = curve.height / 2;
+			var radius = midX; // assuming square canvas
+			var startAngle = 0;
+			var endAngle;
+			
+			for(var i=0; i<deadlines.length; i++) {
+				endAngle = startAngle + (shares[i] / 100 * 2 * Math.PI);
+
+				context.beginPath();
+				context.moveTo( midX, midY );
+				context.arc(midX, midY, radius, startAngle, endAngle, false);
+				context.closePath();
+				context.fillStyle = '#' + RGBArrayToString( HSVtoRGB( i / deadlines.length, 1, 1) );
+				context.fill();
+				
+				startAngle = endAngle;
+			}
+		}
+	
+		function regenRandom(e) {
+			e.preventDefault();
+			
+			generateDeadlines();
+			render();
+		}
+		
+		function regenStatic(e) {
+			e.preventDefault();
+			
+			deadlines = [ 1*60, 2*60, 3*60, 5*60, 20*60, 2*60*60, 6*60*60, 24*60*60, 7*24*60*60, 30*24*60*60, 4*30*24*60*60, 3*365*60*60 ];
+			
+			render();
+		}
+		
+		window.addEventListener( 'load', generateDeadlines, false );
+		window.addEventListener( 'load', render, false );
+	</script>
+</head>
+<body>
+<canvas id="curve" width="800" height="800" style="border: 2px dotted red"></canvas>
+<pre id="deadlines" style="display: inline-block; width=400px"></pre>
+<pre id="shares" style="display: inline-block; width=400px"></pre>
+
+<p>
+<button onclick="regenRandom(event)">New random deadlines</button>
+<button onclick="regenStatic(event)">Special Irontiga-flava static deadlines</button>
+</body>
+</html>

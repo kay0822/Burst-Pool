@@ -1,0 +1,5 @@
+#include "IDB/IDB.h"
+
+extern bool time_to_die;
+
+IDB::Engine *make_db_connection();

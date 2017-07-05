@@ -1,0 +1,20 @@
+#ifndef SRC_CONFIG_HPP_
+#define SRC_CONFIG_HPP_
+
+#define BASE_HANDLER BaseHandler
+#include "BaseHandler.hpp"
+
+extern const std::string BURST_SERVER;
+extern const int DB_POOL_SIZE;
+extern const char *BIND_ADDRESS;
+extern const char *BIND_ADDRESS6;
+extern const int LISTEN_PORT;
+extern const char *DB_URI;
+extern const char *DOC_ROOT;
+extern const char *LOG_FILE;
+
+extern const char *DB_SCHEMA;
+extern const char *DB_USER;
+extern const char *DB_PASSWORD;
+
+#endif

@@ -1,0 +1,3 @@
+include ../build/gmake/objects.gmk
+
+${OUTPUT_DIR}/Block.o: ${OUTPUT_DIR}/Share.cxx

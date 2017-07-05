@@ -1,0 +1,46 @@
+#include "webAPI/getRecentBlocks.hpp"
+
+#include "mining-info.hpp"
+
+#include "Nonce.hpp"
+#include "Block.hpp"
+
+#include "cJSON.hpp"
+
+
+int Handlers::webAPI::getRecentBlocks::process( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	Block blocks;
+	blocks.order_by( Block::COL_blockID, Block::ORDER_BY_DESC );
+	blocks.limit(10);
+	blocks.search();
+
+	cJSON *historic_array = cJSON_CreateArray();
+
+	while( Block *block = blocks.result() ) {
+		cJSON *entry = cJSON_CreateObject();
+		cJSON_AddNumberToObject( entry, (char *)"block", block->blockID() );
+		cJSON_AddNumberToObject( entry, (char *)"generatorAccountId", block->generator_account_id() );
+		cJSON_AddNumberToObject( entry, (char *)"ourBestAccountId", block->best_nonce_account_id() );
+		cJSON_AddNumberToObject( entry, (char *)"blockReward", block->block_reward() );
+		cJSON_AddNumberToObject( entry, (char *)"isOurBlock", block->is_our_block() );
+		cJSON_AddItemToArray(historic_array, entry);
+
+		delete block;
+	}
+
+	cJSON *root = cJSON_CreateObject();
+	cJSON_AddItemToObject( root, (char *)"blocks", historic_array );
+
+	char *json = cJSON_Print(root);
+
+	resp->status_code = 200;
+	resp->content = std::string(json);
+
+	free(json);
+
+	cJSON_Delete(root);
+
+	std::cerr << resp->content << std::endl;
+
+	return MHD_YES;
+}

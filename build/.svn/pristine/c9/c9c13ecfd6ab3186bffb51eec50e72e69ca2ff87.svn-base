@@ -1,0 +1,7 @@
+#include "mining-info.hpp"
+
+extern pthread_mutex_t mining_info_mutex;
+extern mining_info_cache_t mining_info_cache;
+
+extern void blockchain_monitor_init();
+extern void blockchain_monitor_shutdown();

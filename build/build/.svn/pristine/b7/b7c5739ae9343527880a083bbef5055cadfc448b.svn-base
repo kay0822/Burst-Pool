@@ -1,0 +1,156 @@
+#include "WebSocket.hpp"
+
+#include <iostream>
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <arpa/inet.h>
+
+
+WebSocket::WebSocket() {
+	fin = rsv1 = rsv2 = rsv3 = mask = false;
+	payload_data = NULL;
+	payload_len = 0;
+	opcode = WS_CONT;
+}
+
+
+bool WebSocket::unpack(const char *buffer, uint64_t buffer_len) {
+	if (buffer_len < 1)
+		return false;
+
+	fin = !!(buffer[0] & 0x80);
+	opcode = buffer[0] & 0x0f;
+
+	if (buffer_len < 2)
+		return false;
+
+	mask = !!(buffer[1] & 0x80);
+	payload_len = buffer[1] & 0x7f;
+	std::cerr << "WS debug: single-octet payload len: " << (uint32_t)payload_len << std::endl;
+
+	uint64_t offset = 2;
+
+	if (payload_len == 126) {
+		if (buffer_len < offset+2)
+			return false;
+
+		payload_len = ntohs( *(uint16_t *)(&buffer[offset]) );
+		std::cerr << "WS debug: 2-octet payload len: " << (uint16_t)payload_len << std::endl;
+		offset += 2;
+	} else if (payload_len == 127) {
+		if (buffer_len < offset+8)
+			return false;
+
+		payload_len = ntohl( *(uint64_t *)(&buffer[offset]) );
+		std::cerr << "WS debug: 8-octet payload len: " << (uint64_t)payload_len << std::endl;
+		offset += 8;
+	}
+
+	if (mask) {
+		if (buffer_len < offset+4)
+			return false;
+		masking_key = *(uint32_t *)(&buffer[offset]);
+		offset += 4;
+	}
+
+	if (buffer_len < offset+payload_len)
+		return false;
+
+	std::cerr << "WS debug: payload data starts at offset: " << (uint64_t)offset << std::endl;
+
+	payload_data = (char *)malloc(payload_len);
+	strncpy(payload_data, &buffer[offset], payload_len);
+
+	if (mask) {
+		for(uint64_t i=0; i<payload_len; i++) {
+			payload_data[i] = payload_data[i] ^ ( (masking_key >> (8 * (i % 4))) & 0xff );
+		}
+	}
+
+	if (opcode == WS_CLOSE && payload_len == 2) {
+		close_code = ntohs( *(uint16_t *)payload_data );
+	}
+
+	return true;
+}
+
+
+bool WebSocket::pack(char *buffer, uint64_t *buffer_len, uint64_t *payload_offset) {
+	memset(buffer, 0, *buffer_len);
+
+	uint64_t max_payload = (*buffer_len) - 2;
+
+	if (max_payload - 8 > 65535)
+		max_payload -= 8;
+	else if (max_payload - 2 >= 126)
+		max_payload -= 2;
+
+	uint64_t payload_this_buffer = payload_len - *payload_offset;
+
+	// fin: rough guess
+	buffer[0] |= (payload_this_buffer <= max_payload) ? 0x80 : 0x00;
+	// opcode
+	buffer[0] |= opcode & 0x0f;
+
+	// mask not allowed
+
+	if (payload_this_buffer > max_payload)
+		payload_this_buffer = max_payload;
+
+	uint64_t buffer_offset = 2;
+
+	if (payload_this_buffer < 126)
+		buffer[1] |= payload_this_buffer & 0x7f;
+	else if (payload_this_buffer <= 65535) {
+		buffer[1] |= 126;
+		*(uint16_t *)(&buffer[buffer_offset]) = htons(payload_this_buffer);
+		buffer_offset += 2;
+	} else {
+		buffer[1] |= 127;
+		*(uint64_t *)(&buffer[buffer_offset]) = htonl(payload_this_buffer);
+		buffer_offset += 8;
+	}
+
+	memcpy(&buffer[buffer_offset], &payload_data[*payload_offset], payload_this_buffer);
+
+	buffer_offset += payload_this_buffer;
+	*payload_offset += payload_this_buffer;
+
+	*buffer_len = buffer_offset;
+
+	// debugging
+	for(int i=0; i<buffer_offset; i+=16) {
+		fprintf(stderr, "%04x  ", i);
+		for(int j=0; j<16; j++) {
+			fprintf(stderr, "%02x ", (uint8_t)buffer[i+j]);
+		}
+		fprintf(stderr, "  ");
+		for(int j=0; j<16; j++) {
+			uint8_t c = buffer[i+j];
+			fprintf(stderr, "%c", (c>=32 && c<=126 ? c : '.'));
+		}
+		fprintf(stderr, "\n");
+		fflush(stderr);
+	}
+
+	return true;
+}
+
+
+void WebSocket::replace_payload(const char *buffer, uint64_t buffer_len) {
+	if (payload_data != NULL)
+		free(payload_data);
+
+	payload_data = (char *)malloc(buffer_len);
+	memcpy(payload_data, buffer, buffer_len);
+	payload_len = buffer_len;
+}
+
+
+
+WebSocket::~WebSocket() {
+	if (payload_data != NULL)
+		free(payload_data);
+}

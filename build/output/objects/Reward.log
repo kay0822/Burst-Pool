@@ -1,0 +1,63 @@
+--- Diagnosis ---
+
+Table name: Rewards
+Column 'blockID':
+	SQL: bigint unsigned not null
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Possible navigator: block() -> Block object
+Column 'accountID':
+	SQL: bigint unsigned not null
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Possible navigator: account() -> Account object
+Column 'amount':
+	SQL: bigint unsigned not null
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Column 'is_paid':
+	SQL: boolean not null default false
+	C++ data type: bool
+	mySQL connector type: Boolean
+	Null-ness: NOT null
+Column 'tx_id':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'is_confirmed':
+	SQL: boolean not null default false
+	C++ data type: bool
+	mySQL connector type: Boolean
+	Null-ness: NOT null
+Column 'paid_at_block_id':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Primary keys: blockID, accountID
+Index: [anon]: is_paid, accountID, blockID
+Index: [anon]: is_confirmed, accountID, blockID
+Search modifier: 'before_blockID' takes uint64_t
+Search modifier: 'below_amount' takes uint64_t
+Search modifier: 'paid_before_block_id' takes uint64_t
+Search modifier: 'sum_amount' takes bool
+SEARCHPREP method found!
+SEARCHPREP_SUPER class found!
+SEARCHPREP_END found!
+Method: 'total_unpaid' takes [nothing], returns STATIC uint64_t 
+Method: 'total_paid_by_accountID' takes  uint64_t accountID , returns STATIC uint64_t 
+Method: 'total_unpaid_by_accountID' takes  uint64_t accountID , returns STATIC uint64_t 
+Method: 'total_deferred_by_accountID' takes  uint64_t accountID, uint64_t threshold , returns STATIC uint64_t 
+Method: 'total_unconfirmed_by_accountID' takes  uint64_t accountID , returns STATIC uint64_t 
+
+--- Sanity checking ---
+
+
+--- Output ---
+
+Key column: blockID
+Key column: accountID

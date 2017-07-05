@@ -1,0 +1,98 @@
+#ifndef MINING_INFO_HPP
+#define MINING_INFO_HPP
+
+#include <pthread.h>
+#include <stdint.h>
+#include <map>
+#include <microhttpd.h>
+#include <time.h>
+#include <string>
+
+extern "C" {
+	#include "shabal.h"
+}
+
+
+extern uint64_t ACCOUNT_UPDATE_TIMEOUT;
+extern uint64_t OUR_ACCOUNT_ID;
+extern char *OUR_ACCOUNT_PASSPHRASE;
+extern uint64_t DEADLINE_MAX;
+extern uint64_t DEADLINE_BAD;
+extern uint64_t HISTORIC_BLOCK_COUNT;
+extern uint64_t HISTORIC_CAPACITY_BLOCK_COUNT;
+extern uint64_t SUBMIT_NONCE_COOLOFF;
+extern double POOL_FEE;
+extern uint64_t POOL_FEE_ACCOUNTID;
+
+
+
+#if 0
+// 10 minutes is about 3ish blocks
+#define ACCOUNT_UPDATE_TIMEOUT (10 * 60)
+
+// our account ID (BURST-BANK-DT2R-BM8G-FYFRH)
+#define OUR_ACCOUNT_ID 15554798000041927313UL
+
+// our account passphrase but encoded
+// (temporarily decoded in memory when needed)
+#define OUR_ACCOUNT_PASSPHRASE (const char *)"hqlgmikmz~n~bb/Bn`b`ljnig*l`l}|wnph$mcja}xd|b{|"
+
+// deadline maximum
+// 30 days
+#define DEADLINE_MAX (30 * 24 * 60 * 60UL)
+
+// deadline really bad
+// 100 years?
+#define DEADLINE_BAD (100 * 365 * 24 * 60 * 60UL)
+
+// how many blocks to go back to determine historic shares
+#define HISTORIC_BLOCK_COUNT 50
+// how many blocks to go back to estimate miner's capacity
+#define HISTORIC_CAPACITY_BLOCK_COUNT 500
+
+// number of seconds that must elapse before a miner can submit a nonce again
+#define SUBMIT_NONCE_COOLOFF 0
+
+// pool fee (e.g. 0.02 is 2%)
+#define POOL_FEE 0.02
+
+// pool fee account (BURST-PFEE-GLEC-243X-6ESTS)
+#define POOL_FEE_ACCOUNTID 5505382764400784780UL
+#endif
+
+#define GENESIS_TIMESTAMP 1407726000
+
+#define PAYMENT_SEND_FEE 100000000
+
+
+#define SCOOP_SIZE			64
+#define SCOOPS_PER_PLOT		4096
+#define PLOT_SIZE			(SCOOP_SIZE * SCOOPS_PER_PLOT)
+
+#define HASH_SIZE			32
+#define HASH_CAP			4096
+
+
+extern pthread_mutex_t mining_info_mutex;
+
+typedef struct {
+	std::string			json;
+	uint64_t			blockID;
+	uint64_t			base_target;
+	uint8_t				gen_sig[32];
+	std::string			gen_sig_str;
+	uint32_t			scoop;
+	uint8_t				new_gen_sig[32];
+	time_t				new_block_when;
+	uint64_t			prev_base_target;
+	uint8_t				prev_gen_sig[32];
+	std::string			prev_gen_sig_str;
+	uint32_t			prev_scoop;
+	uint64_t			prev_block_reward;
+	time_t				prev_block_when;
+	uint64_t			n_potential_miners;
+} mining_info_cache_t;
+
+extern mining_info_cache_t mining_info_cache;
+
+#endif

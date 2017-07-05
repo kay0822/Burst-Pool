@@ -1,0 +1,111 @@
+--- Diagnosis ---
+
+Table name: Blocks
+Column 'blockID':
+	SQL: bigint unsigned not null unique
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Possible navigator: block() -> Block object
+Column 'first_seen_when':
+	SQL: timestamp not null default current_timestamp
+	C++ data type: time_t
+	mySQL connector type: Timestamp
+	Null-ness: NOT null
+Column 'best_nonce_account_id':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'generator_account_id':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'block_reward':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'is_our_block':
+	SQL: boolean not null default false
+	C++ data type: bool
+	mySQL connector type: Boolean
+	Null-ness: NOT null
+Column 'has_been_shared':
+	SQL: boolean not null default false
+	C++ data type: bool
+	mySQL connector type: Boolean
+	Null-ness: NOT null
+Column 'base_target':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'forged_when':
+	SQL: timestamp null default null
+	C++ data type: time_t
+	mySQL connector type: Timestamp
+	Null-ness: can be null
+Column 'scoop':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'nonce':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'gen_sig_str':
+	SQL: char(64)
+	C++ data type: std::string
+	mySQL connector type: String
+	Null-ness: can be null
+Column 'deadline':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'our_best_deadline':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'num_potential_miners':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'json':
+	SQL: varchar(255)
+	C++ data type: std::string
+	mySQL connector type: String
+	Null-ness: can be null
+Primary keys: blockID
+Index: [anon]: is_our_block, has_been_shared
+Search modifier: 'after_blockID' takes uint64_t
+Search modifier: 'before_blockID' takes uint64_t
+Search modifier: 'has_reward_value' takes bool
+Child objects: Nonce, new()-based navigation via block_nonces()
+Child objects: Share, new()-based navigation via block_shares()
+Child objects: Reward, new()-based navigation via block_rewards()
+SEARCHPREP method found!
+SEARCHPREP_SUPER class found!
+SEARCHPREP_END found!
+Method: 'latest_block' takes [nothing], returns STATIC Block *
+Method: 'latest_blockID' takes [nothing], returns STATIC uint64_t 
+Method: 'latest_won_block' takes [nothing], returns STATIC Block *
+Method: 'find_best_nonce' takes  uint64_t blockID , returns STATIC Nonce *
+Method: 'recalculate_shares' takes  uint64_t blockID , returns STATIC void 
+Method: 'reward_miners' takes [nothing], returns void 
+Method: 'previous_reward_post_fee' takes [nothing], returns STATIC uint64_t 
+Method: 'unpack_gen_sig_str' takes  const std::string gen_sig_str, uint8_t *gen_sig , returns STATIC void 
+
+--- Sanity checking ---
+
+Ignoring self-referencial navigator: block() -> Block object (us)
+
+--- Output ---
+
+Key column: blockID

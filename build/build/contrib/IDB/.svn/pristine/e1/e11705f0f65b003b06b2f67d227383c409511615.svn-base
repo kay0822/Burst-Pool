@@ -1,0 +1,102 @@
+#include "IDB/tables.h"
+
+#include "IDB/tableOrSubquery.h"
+#include "IDB/where.h"
+
+namespace IDB {
+
+	Tables::TableJoin::TableJoin(std::string join_type, TableOrSubquery *new_table, Where *on_clause) {
+		join = join_type;
+		table = new_table;
+		on = on_clause;
+		table_needs_deleting = false;
+	}
+
+
+	Tables::TableJoin::TableJoin(std::string join_type, std::string new_table, Where *on_clause) {
+		join = join_type;
+		table = new IDB::Table( new_table );
+		on = on_clause;
+		table_needs_deleting = true;
+	}
+
+
+	Tables::TableJoin::~TableJoin() {
+		if (table_needs_deleting)
+			delete table;
+	}
+
+
+	Tables::Tables(TableOrSubquery *table) {
+		initial_table = table;
+		initial_table_needs_deleting = false;
+	}
+
+
+	Tables::Tables(std::string table) {
+		initial_table = new IDB::Table( table );
+		initial_table_needs_deleting = true;
+	}
+
+
+	void Tables::join(std::string join_type, TableOrSubquery *new_table, Where *on_clause) {
+		TableJoin				*tj = new TableJoin( join_type, new_table, on_clause );
+
+		joins.push_back(tj);
+	}
+
+
+	void Tables::join(std::string join_type, std::string new_table, Where *on_clause) {
+		TableJoin				*tj = new TableJoin( join_type, new_table, on_clause );
+
+		joins.push_back(tj);
+	}
+
+
+	std::string Tables::toString() {
+		std::string								output;
+
+		// copy initial table
+		output = initial_table->toString();
+
+		for(std::vector<TableJoin *>::iterator it = joins.begin(); it != joins.end(); it++) {
+			TableJoin *tj = *it;
+
+			output += " " + tj->join + " " + tj->table->toString();
+
+			if (tj->on && tj->on != IDB_NO_ON_CLAUSE) {
+				output += " ON " + tj->on->toString();
+			}
+		}
+
+		return output;
+	}
+
+
+	unsigned int Tables::bind(sql::PreparedStatement *pstmt, unsigned int bind_offset) {
+		for(std::vector<TableJoin *>::iterator it = joins.begin(); it != joins.end(); it++) {
+			TableJoin *tj = *it;
+
+			// is joined table actually a sub-query with bind params?
+			bind_offset = tj->table->bind(pstmt, bind_offset);
+
+			if (tj->on && tj->on != IDB_NO_ON_CLAUSE) {
+				bind_offset = tj->on->bind(pstmt, bind_offset);
+			}
+		}
+
+		return bind_offset;
+	}
+
+
+	Tables::~Tables() {
+		for(std::vector<TableJoin *>::iterator it = joins.begin(); it != joins.end(); it++) {
+			TableJoin *tj = *it;
+
+			delete tj;
+		}
+
+		if (initial_table_needs_deleting)
+			delete initial_table;
+	}
+}

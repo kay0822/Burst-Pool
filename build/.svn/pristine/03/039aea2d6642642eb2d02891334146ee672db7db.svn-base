@@ -1,0 +1,249 @@
+/*
+		Create table Nonces (
+			accountID					bigint unsigned not null,
+			blockID						bigint unsigned not null,
+			nonce						bigint unsigned not null,
+			submitted_when				timestamp not null default current_timestamp,
+			deadline					bigint unsigned not null,
+			deadline_string				varchar(255) not null,
+			forge_when					timestamp not null default "0000-00-00 00:00:00",
+			is_blocks_best_deadline		boolean not null default false,
+			is_accounts_best_deadline	boolean not null default false,
+			miner						varchar(255),
+			primary key					(accountID, blockID, nonce),
+			index						(blockID, accountID),
+			index						(blockID, deadline desc)
+		);
+*/
+
+#include "Account.hpp"
+#include "Block.hpp"
+#include "mining-info.hpp"
+
+extern "C" {
+	#include "shabal.h"
+}
+
+#include <sys/endian.h>
+
+#include "Nonce.cxx"
+
+
+// pre-cache shabal context for calculating deadlines
+shabal_context	deadline_sc;
+uint64_t		cached_blockID = 0;
+
+
+void Nonce::save_and_rank() {
+	// work out best deadlines for this block and account
+	IO::Object::start_transaction();
+
+	std::unique_ptr<Block> block( this->block() );
+
+	// stop other access to this Block info while we determine best nonces
+	block->lock_record();
+
+	std::unique_ptr<Nonce> best_block_nonce( Nonce::get_best_block_nonce( this->blockID() ) );
+
+	// if there's no existing best nonce for this block
+	// OR this nonce's deadline is better than the existing best nonce...
+	if ( !best_block_nonce || this->deadline() < best_block_nonce->deadline() ) {
+		// ... then we are the new best nonce for this block
+		this->is_blocks_best_deadline( true );
+		block->our_best_deadline( this->deadline() );
+
+		if (best_block_nonce) {
+			// demote previous best
+			best_block_nonce->is_blocks_best_deadline( false );
+			best_block_nonce->save();
+
+			// update Block if the best account has changed
+			if ( this->accountID() != best_block_nonce->accountID() )
+				block->best_nonce_account_id( this->accountID() );
+		}
+
+		block->save();
+	}
+
+	std::unique_ptr<Nonce> best_account_nonce( Nonce::get_best_account_nonce(this->blockID(), this->accountID() ) );
+
+	if ( !best_account_nonce || this->deadline() < best_account_nonce->deadline() ) {
+		this->is_accounts_best_deadline( true );
+
+		if (best_account_nonce) {
+			// demote previous best
+			best_account_nonce->is_accounts_best_deadline( false );
+			best_account_nonce->save();
+
+			std::cout << "account " << this->accountID() << ", block " << block->blockID() << " best deadline was " << best_account_nonce->deadline() << " now " << this->deadline() << std::endl;
+		}
+	}
+
+	save();
+
+	IO::Object::commit();
+
+	Block::recalculate_shares( this->blockID() );
+}
+
+
+STATIC Nonce *Nonce::get_best_block_nonce( uint64_t blockID ) {
+	Nonce nonces;
+	nonces.blockID( blockID );
+	nonces.is_blocks_best_deadline( true );
+	return nonces.present();
+}
+
+
+STATIC Nonce *Nonce::get_first_block_nonce( uint64_t blockID ) {
+	Nonce nonces;
+	nonces.blockID( blockID );
+	nonces.order_by( COL_submitted_when, ORDER_BY_ASC );
+	return nonces.present();
+}
+
+
+STATIC Nonce *Nonce::get_worst_block_nonce( uint64_t blockID ) {
+	Nonce nonces;
+	nonces.blockID( blockID );
+	nonces.is_accounts_best_deadline(true);
+	nonces.order_by( COL_deadline, ORDER_BY_DESC );
+	return nonces.present();
+}
+
+
+STATIC Nonce *Nonce::get_last_block_nonce( uint64_t blockID ) {
+	Nonce nonces;
+	nonces.blockID( blockID );
+	nonces.order_by( COL_submitted_when, ORDER_BY_DESC );
+	return nonces.present();
+}
+
+
+STATIC Nonce *Nonce::get_best_account_nonce( uint64_t blockID, uint64_t accountID ) {
+	Nonce nonces;
+	nonces.blockID( blockID );
+	nonces.accountID( accountID );
+	nonces.is_accounts_best_deadline( true );
+	return nonces.present();
+}
+
+
+STATIC uint8_t *Nonce::plot_nonce( uint64_t account_id, uint64_t nonce ) {
+	uint8_t final[HASH_SIZE];
+
+	#ifndef DEV_MODE
+		// aligned to 256 to support future AVX shabal code
+		// right now alignment to 16 would probably be enough
+		uint8_t *gendata = (uint8_t *)aligned_alloc(256, 16 + PLOT_SIZE);
+		if (gendata == NULL) {
+			perror("aligned_alloc");
+			exit(2);
+		}
+	#else
+		// for leak checking we have to use malloc()
+		uint8_t *gendata = (uint8_t *)malloc(16 + PLOT_SIZE);
+		if (gendata == NULL) {
+			perror("malloc");
+			exit(2);
+		}
+	#endif
+
+	// copy account address to plot end
+	uint64_t account_id_swapped = htobe64(account_id);
+	memcpy(gendata + PLOT_SIZE, (uint8_t *)&account_id_swapped, 8);
+
+	uint8_t *xv = (uint8_t *)&nonce;
+
+	gendata[PLOT_SIZE+8] = xv[7]; gendata[PLOT_SIZE+9] = xv[6]; gendata[PLOT_SIZE+10] = xv[5]; gendata[PLOT_SIZE+11] = xv[4];
+	gendata[PLOT_SIZE+12] = xv[3]; gendata[PLOT_SIZE+13] = xv[2]; gendata[PLOT_SIZE+14] = xv[1]; gendata[PLOT_SIZE+15] = xv[0];
+
+	shabal_context fresh_sc;
+	shabal_init(&fresh_sc, 256);
+
+	shabal_context x;
+
+	uint32_t len = 16;
+
+	for(int i = PLOT_SIZE; i > 0; i -= HASH_SIZE) {
+		// shabal_init(&x, 256);
+		memcpy(&x, &fresh_sc, sizeof(shabal_context));
+		shabal(&x, &gendata[i], len);
+		shabal_close(&x, 0, 0, &gendata[i - HASH_SIZE]);
+
+		if (len < HASH_CAP) {
+			len += HASH_SIZE;
+			if (len > HASH_CAP)
+				len = HASH_CAP;
+		}
+	}
+
+	// shabal_init(&x, 256);
+	memcpy(&x, &fresh_sc, sizeof(shabal_context));
+	shabal(&x, gendata, 16 + PLOT_SIZE);
+	shabal_close(&x, 0, 0, final);
+
+	// XOR with final
+	for(int i = 0; i < PLOT_SIZE; i ++)
+		gendata[i] ^= (final[i % 32]);
+
+	return gendata;
+}
+
+
+STATIC uint64_t Nonce::calculate_deadline( uint64_t account_id, uint64_t nonce, uint64_t blockID, uint32_t scoop, uint64_t base_target, std::string gen_sig_str ) {
+	uint8_t gen_sig[32];
+	Block::unpack_gen_sig_str( gen_sig_str, gen_sig );
+
+	std::unique_ptr<uint8_t> gendata( Nonce::plot_nonce( account_id, nonce ) );
+
+	uint8_t final[HASH_SIZE];
+
+	shabal_context x;
+
+	// do we need to pre-cache?
+	if (cached_blockID != blockID) {
+		// pre-cache
+		shabal_init(&x, 256);
+		shabal(&x, gen_sig, HASH_SIZE);
+		memcpy(&deadline_sc, &x, sizeof(deadline_sc));
+
+		cached_blockID = blockID;
+	} else {
+		// re-use cached context
+		memcpy(&x, &deadline_sc, sizeof(deadline_sc));
+	}
+
+	shabal(&x, &*gendata + (scoop * SCOOP_SIZE), SCOOP_SIZE);
+	shabal_close(&x, 0, 0, final);
+
+	uint64_t target_result = *(uint64_t *)final;
+
+	return target_result / base_target;
+}
+
+
+STATIC std::string Nonce::deadline_to_string( uint64_t deadline ) {
+	static const std::string units[] = { "year", "month", "day", "hour", "min", "sec" };
+	static const uint64_t unit_multipliers[] = { 365*24*60*60, 30*24*60*60, 24*60*60, 60*60, 60, 1 };
+
+	if (deadline < 2)
+		return std::to_string(deadline) + " " + units[5];
+
+	std::string deadline_string;
+	for(int i=0; i<6; i++) {
+		if (deadline > unit_multipliers[i]) {
+			if ( !deadline_string.empty() )
+				deadline_string += ", ";
+
+			uint64_t n_units = deadline / unit_multipliers[i];
+			deadline = deadline % unit_multipliers[i];
+			deadline_string += std::to_string(n_units) + " " + units[i];
+
+			if (n_units > 1)
+				deadline_string += "s";
+		}
+	}
+
+	return deadline_string;
+}

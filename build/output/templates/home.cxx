@@ -1,0 +1,78 @@
+#include "home.hxx"
+#include <boost/foreach.hpp>
+#define foreach BOOST_FOREACH
+
+#include <sstream>
+
+using std::string;
+
+std::string Templates::home::render() {
+	std::stringstream _output;
+	
+#line 1 "home.ct"
+;	_output << "<!doctype html> \n"
+		<< "<html>\n"
+		<< "<head>\n"
+		<< "	<script type=\"text/javascript\" src=\"/js/stats.js\"></script>\n"
+		<< "	<link href='http://fonts.googleapis.com/css?family=Roboto:400,300italic,300,100italic,100,400italic,500' rel='stylesheet' type='text/css'>\n"
+		<< "	<link rel=\"stylesheet\" type=\"text/css\" href=\"/css/main.css\">\n"
+		<< "</head>\n"
+		<< "<body>\n"
+		<< "\n"
+		<< "	<div id=\"current-block-info\">\n"
+		<< "		<span id=\"current-block-details\"></span><br>\n"
+		<< "		Miners: <span id=\"num-miners\"></span><br>\n"
+		<< "		<a href=\"https://block.burstcoin.info/acc.php?acc=BURST-7CPJ-BW8N-U4XF-CWW3U\" target=\"_blank\">BURST-7CPJ-BW8N-U4XF-CWW3U</a><br>\n"
+		<< "		[<a href=\"http://127.0.0.1:8125/rewardassignment.html\" target=\"_blank\">Set reward assignment...</a>]\n"
+		<< "	</div>\n"
+		<< "	\n"
+		<< "	<canvas id=\"timer\"></canvas>\n"
+		<< "\n"
+		<< "	<canvas id=\"current-shares-chart\"></canvas>\n"
+		<< "	<div id=\"current-shares-graph\"></div>\n"
+		<< "\n"
+		<< "	<div id=\"current-shares-container\" class=\"table-container\">	\n"
+		<< "		<table id=\"current-shares-table\" class=\"shares-table\">\n"
+		<< "			<caption>Current Shares</caption>\n"
+		<< "			<thead><tr><th>Account</th><th>Deadline</th><th>Share</th><th>~Reward</th></tr></thead>\n"
+		<< "			<tbody id=\"current-shares-list\"></tbody>\n"
+		<< "		</table>\n"
+		<< "	</div>\n"
+		<< "	\n"
+		<< "	<canvas id=\"historic-shares-chart\"></canvas>\n"
+		<< "	\n"
+		<< "	<div id=\"historic-shares-container\" class=\"table-container\">\n"
+		<< "		<table id=\"historic-shares-table\" class=\"shares-table\">\n"
+		<< "			<caption>Historic Shares</caption>\n"
+		<< "			<thead><tr><th>Account</th><th>~Capacity</th><th>Share</th><th>~Reward</th><th>Total Earned</th></tr></thead>\n"
+		<< "			<tbody id=\"historic-shares-list\"></tbody>\n"
+		<< "		</table>\n"
+		<< "	</div>\n"
+		<< "	\n"
+		<< "	<div id=\"awards-tables\">\n"
+		<< "		<table id=\"current-awards-table\" class=\"awards-table\">\n"
+		<< "			<caption>Current Block Metrics</caption>\n"
+		<< "			<thead><tr><th>Metric</th><th>Account/Value</th></tr></thead>\n"
+		<< "			<tbody id=\"current-awards-list\"></tbody>\n"
+		<< "		</table>\n"
+		<< "		\n"
+		<< "		<table id=\"previous-awards-table\" class=\"awards-table\">\n"
+		<< "			<caption>Previous Block Metrics</caption>\n"
+		<< "			<thead><tr><th>Metric</th><th>Account/Value</th></tr></thead>\n"
+		<< "			<tbody id=\"previous-awards-list\"></tbody>\n"
+		<< "		</table>\n"
+		<< "	</div>\n"
+		<< "	\n"
+		<< "	<div id=\"recent-blocks-container\" class=\"table-container\">\n"
+		<< "		<table id=\"recent-blocks-table\">\n"
+		<< "			<caption>Recent Blocks</caption>\n"
+		<< "			<thead><tr><th>Block</th><th>Forged By</th><th>Our Best Miner</th></tr></thead>\n"
+		<< "			<tbody id=\"recent-blocks-list\"></tbody>\n"
+		<< "		</table>\n"
+		<< "	</div>\n"
+		<< "		\n"
+		<< "</body>\n"
+		<< "</html>"; 
+	return _output.str();
+};
+

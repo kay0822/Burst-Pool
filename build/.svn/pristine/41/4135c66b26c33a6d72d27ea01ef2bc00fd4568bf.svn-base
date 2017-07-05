@@ -1,0 +1,73 @@
+#include <stdint.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <signal.h>
+
+#include "server.hpp"
+#include "ftime.hpp"
+#include "config_loader.hpp"
+#include "config.hpp"
+#include "database.hpp"
+#include "remote.hpp"
+
+#include "Block.hpp"
+
+#include "blockchain_common.hpp"
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+static volatile bool time_to_die = false;
+
+
+// bleh this shouldn't be here
+Handler *handler_factory() { return NULL; }
+
+
+
+
+void update_accounts() {
+	while( !time_to_die ) {
+		Account accounts;
+		accounts.needs_updating(true);
+
+		std::unique_ptr<Account> account( accounts.present() );
+		if (account)
+			account->update_check();
+
+		sleep(1);
+	}
+}
+
+
+static void handle_signal(int sig) {
+	std::cout << ftime() << "!!! Received sig " << sig << " !!!" << std::endl;
+	time_to_die = true;
+}
+
+
+int main() {
+	close(0);
+
+	config_init();
+
+	std::cout << ftime() << "--- START ---" << std::endl;
+
+	database_init();
+
+	signal( SIGCHLD, SIG_IGN );
+	signal( SIGINT, handle_signal );
+	signal( SIGTERM, handle_signal );
+
+	IDB::Engine *idb = make_db_connection();
+	IO::Object::set_engine( idb );
+
+	update_accounts();
+
+	std::cout << ftime() << "--- STOP ---" << std::endl;
+
+	return 0;
+}
+

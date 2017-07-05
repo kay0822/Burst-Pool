@@ -1,0 +1,9 @@
+#ifndef SRC_CONFIG_HPP_
+#define SRC_CONFIG_HPP_
+
+#define BASE_HANDLER BaseHandler
+#include "BaseHandler.hpp"
+
+extern std::string BURST_SERVER;
+
+#endif

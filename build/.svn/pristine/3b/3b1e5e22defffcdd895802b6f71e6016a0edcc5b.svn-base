@@ -1,0 +1,36 @@
+#include "config.hpp"
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+const std::string BURST_SERVER = "5.153.225.55:8125";
+
+#ifndef DEV_MODE
+
+	const int DB_POOL_SIZE = 400;
+	const char *BIND_ADDRESS = "5.153.225.55";
+	const char *BIND_ADDRESS6 = NULL;
+	const int LISTEN_PORT = 8124;
+	const char *DB_URI = "unix:///tmp/mysql.sock";
+	const char *DOC_ROOT = "/home/burstpool/static";
+	const char *LOG_FILE = "/home/burstpool/server.log";
+
+#else
+
+	const int DB_POOL_SIZE = 10;
+	const char *BIND_ADDRESS = "0.0.0.0";
+	const char *BIND_ADDRESS6 = NULL;
+	const int LISTEN_PORT = 9876;
+	const char *DB_URI = "unix:///tmp/mysql.sock";
+	const char *DOC_ROOT = "/home/burstcoin/dompool/static";
+	const char *LOG_FILE = "/home/burstcoin/dompool/server.log";
+
+#endif
+
+const char *DB_SCHEMA = "burstpool";
+const char *DB_USER = "pool";
+const char *DB_PASSWORD = "pool";
+
+Handler *handler_factory() { return new BASE_HANDLER(); }

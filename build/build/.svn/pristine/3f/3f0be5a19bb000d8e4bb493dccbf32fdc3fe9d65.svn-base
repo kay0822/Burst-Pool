@@ -1,0 +1,432 @@
+#include "Request.hpp"
+#include "RegistryHandler.hpp"
+#include "ReqResp.hpp"
+#include "Pool.hpp"
+
+// somehow registration needs to be done automatically
+// maybe an auto-generated include file?
+#include "config.hpp"
+
+#ifdef EXTRA_CLASS
+#define EXTRA_DELETE { EXTRA_CLASS *_extra = (EXTRA_CLASS *) req->extra; if (_extra) delete _extra; else std::cerr << "delete() called on NULL req->extra!" << std::endl; }
+#else
+#define EXTRA_DELETE
+#endif
+
+#ifndef HANDLER_SUPERCLASS
+#include "Handler.hpp"
+#define HANDLER_SUPERCLASS RegistryHandler
+#endif
+
+// boring mysql stuff
+#include "mysql_connection.h"
+#include <cppconn/driver.h>
+#include <cppconn/resultset.h>
+
+// object and database stuff
+#include "IDB/IDB.h"
+#include "IO/Object.h"
+
+#include <microhttpd.h>
+#include <iostream>
+#include <sstream>
+
+#include "signal.h"
+
+#include <fcntl.h>
+#include <unistd.h>
+#include <time.h>
+#include <sys/time.h>
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+
+#define POSTBUFFERSIZE 65536
+
+
+Pool<IDB::Engine *> DB_connections;
+bool time_to_die = false;
+sql::Driver *driver = NULL;
+
+
+int post_processor( void *coninfo_cls, enum MHD_ValueKind kind, const char *key, const char *filename, const char *content_type,
+					const char *transfer_encoding, const char *data, uint64_t off, size_t size ) {
+	// reroute to object call
+	ReqResp *req_resp = (ReqResp *) coninfo_cls;
+	
+	return req_resp->req->handler->post_processor( coninfo_cls, kind, key, filename, content_type, transfer_encoding, data, off, size);
+}
+
+
+IDB::Engine *make_db_connection() {
+	sql::Connection *con = driver->connect(DB_URI, DB_USERNAME, DB_PASSWORD);
+	con->setSchema( DB_NAME );
+
+	IDB::Engine *idb = new IDB::Engine(con);
+	idb->execute("SET NAMES utf8");
+
+	return idb;	
+}
+
+
+int access_handler( void *cls, struct MHD_Connection *connection, const char *url, const char *method, const char *version,
+					const char *upload_data, size_t *upload_data_size, void **con_cls ) {
+
+	struct timeval tp;
+	gettimeofday( &tp, NULL );
+
+	char ftime_buf[100];
+	bzero(ftime_buf, sizeof(ftime_buf));
+	strftime( ftime_buf, sizeof(ftime_buf), "%Y-%m-%d %H:%M:%S", gmtime(&tp.tv_sec) );
+
+	// headers only so far?
+	if (*con_cls == NULL) {
+		// log it?
+		std::cout << ftime_buf << "." << tp.tv_usec << " request: " << method << " " << url << std::endl;
+
+		// store request
+		Request *req = new Request();
+		
+		if ( strcmp(method, MHD_HTTP_METHOD_GET) == 0 ) {
+			req->method = GET;
+		} else if ( strcmp(method, MHD_HTTP_METHOD_POST) == 0 ) {
+			req->method = POST;
+		} else {
+			// HTTP method not supported
+			delete req;
+			std::cout << ftime_buf << "." << tp.tv_usec << " " << method << " not supported" << std::endl;
+			
+			// could send 400 BAD REQUEST?
+			return MHD_NO;
+		}
+		
+		// fill in other bits
+		#ifdef EXTRA_CLASS
+			req->extra = new EXTRA_CLASS();
+		#endif
+
+		req->url = url;
+		std::istringstream(version) >> req->version; 
+
+		// allocate DB connection
+		// this can block!
+		req->db_con = DB_connections.request();
+
+		if ( req->db_con->connection()->isClosed() ) {
+			// this one is buggered - make a new one
+			delete req->db_con;
+
+			req->db_con = make_db_connection();
+		}
+
+		IO::Object::set_engine( req->db_con );
+
+		// parse cookies
+		req->parse_cookies( connection );
+		
+		// parse headers
+		req->parse_headers( connection );
+
+		// responses can be created from here on
+		Response *resp = new Response;
+
+		// assign default handler
+		req->handler = new HANDLER_SUPERCLASS;
+
+		// call handler to determine what to do with URL
+		Handler *handler = req->handler->route( connection, req, resp );
+
+		// we need an initial handler for URL
+		if (handler == NULL) {
+			std::cout << ftime_buf << "." << tp.tv_usec << " no initial handler for " << url << std::endl;
+
+			EXTRA_DELETE;
+			DB_connections.release( req->db_con );
+			delete req->handler; 
+			delete req;
+			delete resp;
+			
+			// could send 404 NOT FOUND?
+			// or special 404 page
+			return MHD_NO;
+		}
+		
+		// recursive routing decisions
+		while( Handler *new_handler = handler->route( connection, req, resp ) ) {
+			delete handler;
+
+			handler = new_handler;
+		}
+
+		// update request
+		if (handler != req->handler)
+			delete req->handler;
+			
+		req->handler = handler;
+		
+		// we're continuing so save state
+		ReqResp *req_resp = new ReqResp( req, resp );
+
+		// parse query string (regardless of HTTP mode)
+		req->parse_query( connection );
+
+		// if this is a POST request, we need to make a post-processor
+		if (req->method == POST ) {
+			req->post_processor = MHD_create_post_processor( connection, POSTBUFFERSIZE, post_processor, (void *) req_resp );
+			
+			if (req->post_processor == NULL) {
+				// didn't work
+				std::cout << ftime_buf << "." << tp.tv_usec << " couldn't create post processor for " << url << std::endl;
+
+				EXTRA_DELETE;
+				DB_connections.release( req->db_con );
+				delete req->handler;
+				delete req;
+				delete resp;
+				delete req_resp;
+				
+				// could send 500 INTERNAL SERVER ERROR?
+				// or special 500 page
+				return MHD_NO;
+			}
+		}
+		
+		// needs to be a header-only-processing hook here
+		int result = req->handler->process_headers( connection, req, resp );
+
+		if (result == MHD_NO) {
+			std::cout << ftime_buf << "." << tp.tv_usec << " HEADERS FAIL: " << url << std::endl;
+
+			if (req->method == POST)
+				MHD_destroy_post_processor( req->post_processor );
+
+			EXTRA_DELETE;
+			DB_connections.release( req->db_con );
+			delete req->handler;
+			delete req;
+			delete resp;
+			delete req_resp;
+		}
+		
+		if (result == MHD_YES)
+			*con_cls = (void *) req_resp;
+
+		return result;
+	}
+	
+	// continuing previous request...
+	ReqResp *req_resp = (ReqResp *) *con_cls;
+	
+	Request *req = req_resp->req;
+	Response *resp = req_resp->resp;
+
+	if (*upload_data_size != 0) {
+		// not in a POST?
+		if ( req->method != POST ) {
+			std::cout << ftime_buf << "." << tp.tv_usec << " upload data present for non-POST method " << method << std::endl;
+
+			MHD_destroy_post_processor( req->post_processor );
+
+			EXTRA_DELETE;
+			DB_connections.release( req->db_con );
+			delete req->handler;
+			delete req;
+			delete resp;
+			delete req_resp;
+			
+			// could return 400 BAD REQUEST?
+			return MHD_NO;
+		}
+
+		// process next chunk...
+		MHD_post_process( req->post_processor, upload_data, *upload_data_size );
+		
+		*upload_data_size = 0;
+          
+		return MHD_YES;
+	} 
+
+	// we are done uploading
+	// GOTCHA: destroying post process may call post_processor callback one last time!
+	if (req->method == POST) {
+		MHD_destroy_post_processor( req->post_processor );
+		
+		// signal to handler's post process that all is done
+		if (req->handler->post_processor( req_resp, MHD_POSTDATA_KIND, "", "", "", "", NULL, 0, 0) == MHD_NO)
+			return MHD_NO;
+	}
+
+	// actual processing
+	std::cout << ftime_buf << "." << tp.tv_usec << " processing: " << url << std::endl;
+
+	int result = MHD_NO;
+	try {
+		result = req->handler->process( connection, req, resp );
+	} catch (...) {
+		// result is NO
+	};
+
+	if (result == MHD_YES) {
+		std::cout << ftime_buf << "." << tp.tv_usec << " OK: " << method << " " << url << std::endl;
+		result = resp->send( connection );
+	} else {
+		std::cout << ftime_buf << "." << tp.tv_usec << " FAIL: " << method << " " << url << std::endl;
+	}
+
+	return result;
+};
+
+
+void request_completed( void *cls, struct MHD_Connection *connection, void **con_cls, enum MHD_RequestTerminationCode toe ) {
+	// nothing to do?
+	if (*con_cls == NULL)
+		return;
+		
+	ReqResp *req_resp = (ReqResp *) *con_cls;
+	
+	Request *req = req_resp->req;
+	Response *resp = req_resp->resp;
+	
+	struct timeval tp;
+	gettimeofday( &tp, NULL );
+
+	char ftime_buf[100];
+	bzero(ftime_buf, sizeof(ftime_buf));
+	strftime( ftime_buf, sizeof(ftime_buf), "%Y-%m-%d %H:%M:%S", gmtime(&tp.tv_sec) );
+
+	std::cerr << ftime_buf << "." << tp.tv_usec << " clean-up: " << req->url << std::endl;
+
+	req->handler->cleanup();
+
+	if (req->db_con)
+		DB_connections.release( req->db_con );
+
+	EXTRA_DELETE;
+	delete req->handler;
+	delete req;
+	delete resp;
+	delete req_resp;
+	
+	*con_cls = NULL;
+};
+
+
+void handle_SIGINT(int sig) {
+	time_to_die = true;
+};
+
+
+int main(int argc, char **argv, char **envp) {
+	close(0);
+
+	int stdout = open( LOG_FILE, O_WRONLY | O_APPEND | O_CREAT, 0664 );
+	dup2(stdout, 1);
+	dup2(stdout, 2);
+
+	std::cout << "Waiting for mySQL socket..." << std::flush;
+	int sock_access;
+	for(int i=0; i<20; i++) {
+		sock_access = access("/tmp/mysql.sock", R_OK);
+		if (!sock_access)
+			break;
+
+		sleep(3);
+		std::cout << " " << i << std::flush;
+	}
+	if (sock_access == -1) {
+		std::cout << " ...giving up!" << std::endl;
+		return 1;
+	}
+	std::cout << std::endl;
+
+	std::cout << "Connecting to mySQL..." << std::endl;
+
+	// mySQL connections?
+	driver = get_driver_instance();
+	try {
+		for(int i=0; i < DB_POOL_SIZE; i++) {
+			DB_connections.add( make_db_connection() );
+		}
+	} catch (...) {
+		std::cout << "mySQL connecting failed" << std::endl;
+		return 1;
+	}
+	std::cout << "mySQL connections: " << DB_POOL_SIZE << std::endl;
+
+	unsigned int flags = MHD_USE_THREAD_PER_CONNECTION | MHD_USE_DEBUG | MHD_USE_POLL;
+
+	#ifdef BIND_ADDRESS6
+		flags |= MHD_USE_IPv6;
+
+		struct sockaddr_in6 sock_addr;
+		bzero(&sock_addr, sizeof(sock_addr));
+		sock_addr.sin6_family = AF_INET6;
+		sock_addr.sin6_port = htons(LISTEN_PORT);
+		int pton_error = inet_pton( AF_INET6, BIND_ADDRESS6, &sock_addr.sin6_addr );
+	#else
+		struct sockaddr_in sock_addr;
+		bzero(&sock_addr, sizeof(sock_addr));
+		sock_addr.sin_family = AF_INET;
+		sock_addr.sin_port = htons(LISTEN_PORT);
+		int pton_error = inet_pton( AF_INET, BIND_ADDRESS, &sock_addr.sin_addr );
+	#endif
+
+	if (!pton_error) {
+		std::cerr << "Couldn't parse bind address" << std::endl;
+		return 1;
+	}
+
+	if (pton_error == -1) {
+		std::cerr << "Bind error" << std::endl;
+		return 1;
+	}
+
+	unsigned short port = LISTEN_PORT;
+	
+	// callback to call to check which clients will be allowed to connect
+	MHD_AcceptPolicyCallback apc = NULL;
+	void *apc_cls = NULL;
+	
+	// default handler for all URIs
+	MHD_AccessHandlerCallback dh = &access_handler;
+	void *dh_cls = NULL;
+	
+	struct MHD_Daemon *daemon = MHD_start_daemon( flags, port, apc, apc_cls, dh, dh_cls,
+													MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+													MHD_OPTION_SOCK_ADDR, &sock_addr,
+													MHD_OPTION_END );
+
+	if (daemon == NULL) {
+		std::cerr << "Can't start daemon!" << std::endl;
+		return 1;
+	}
+
+	HANDLER_SUPERCLASS::init();
+
+	signal( SIGINT, handle_SIGINT );
+	// XXX signal() call needed here to clean up zombies!
+
+	std::cout << "Server ready!" << std::endl;
+
+	while(!time_to_die) {
+		sleep(1);
+	}
+
+	// clean up
+	std::cout << "Server shutdown!" << std::endl;
+	MHD_stop_daemon( daemon );
+		
+	// release DB pool
+	std::cout << "Disconnecting from mySQL..." << std::endl;
+	while(! DB_connections.empty() ) {
+		IDB::Engine *idb = DB_connections.request();
+		sql::Connection *con = idb->connection();
+		delete con;
+		delete idb;
+	}
+
+	return 0;
+};

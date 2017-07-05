@@ -1,0 +1,101 @@
+#include <stdint.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <signal.h>
+
+#include "server.hpp"
+#include "ftime.hpp"
+#include "config_loader.hpp"
+#include "config.hpp"
+#include "database.hpp"
+#include "remote.hpp"
+
+#include "Block.hpp"
+
+#include "blockchain_common.hpp"
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+static volatile bool time_to_die = false;
+
+
+// bleh this shouldn't be here
+Handler *handler_factory() { return NULL; }
+
+
+
+
+void confirm_rewards() {
+	while( !time_to_die ) {
+		uint64_t latest_blockID = Block::latest_blockID();
+
+		Reward unconfirmed_rewards;
+		unconfirmed_rewards.is_paid(true);
+		unconfirmed_rewards.is_confirmed(false);
+		unconfirmed_rewards.paid_before_block_id( latest_blockID - 4 );
+		unconfirmed_rewards.search();
+
+		while( Reward *reward = unconfirmed_rewards.result() ) {
+			IO::Object::start_transaction();
+
+			reward->refresh();
+
+			// if we can't find it then it's lost and we should re-pay
+			std::string tx_json = fetch( "http://" + BURST_SERVER + "/burst?requestType=getTransaction&transaction=" + std::to_string( reward->tx_id() ) );
+
+			if ( qJSON( tx_json, "errorCode") == "5" ) {
+				// lost...
+				std::cout << ftime() << "Blockchain seems to have lost tx id " << reward->tx_id() << " to " << reward->accountID() << " for " << reward->amount() << ", block " << reward->blockID() << std::endl;
+				reward->is_paid(false);
+				reward->undef_tx_id();
+				reward->undef_paid_at_block_id();
+				reward->save();
+			} else if ( qJSON( tx_json, "confirmations" ).length() >= 2 ) {
+				// at least 10 confirmations then
+				std::cout << ftime() << "Blockchain confirms tx id " << reward->tx_id() << " to " << reward->accountID() << " for " << reward->amount() << ", block " << reward->blockID() << std::endl;
+				reward->is_confirmed(true);
+				reward->save();
+			}
+
+			IO::Object::commit();
+
+			delete reward;
+		}
+
+		sleep(1);
+	}
+}
+
+
+static void handle_signal(int sig) {
+	std::cout << ftime() << "!!! Received sig " << sig << " !!!" << std::endl;
+	time_to_die = true;
+}
+
+
+int main() {
+	close(0);
+
+	config_init();
+
+	std::cout << ftime() << "--- START ---" << std::endl;
+
+	database_init();
+
+	signal( SIGCHLD, SIG_IGN );
+	signal( SIGINT, handle_signal );
+	signal( SIGTERM, handle_signal );
+
+	IDB::Engine *idb = make_db_connection();
+	IO::Object::set_engine( idb );
+
+	confirm_rewards();
+
+	std::cout << ftime() << "--- STOP ---" << std::endl;
+
+	return 0;
+}
+

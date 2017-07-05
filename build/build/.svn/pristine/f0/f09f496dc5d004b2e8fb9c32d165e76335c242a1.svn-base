@@ -1,0 +1,60 @@
+OUTPUT_DIR=../output/objects
+LIBS=libObjects.so libObjects.a
+LIBS_PATHS=${addprefix ${OUTPUT_DIR}/,${LIBS}}
+OBJECT_SRCS:=${shell find * -type f -name '*.cpp' -print}
+OBJECT_DIRS:=${shell find * -type d -print}
+OBJECT_STEMS:=${OBJECT_SRCS}
+OBJECT_STEMS:=${OBJECT_STEMS:.cpp=}
+OBJECT_OBJS:=${addprefix ${OUTPUT_DIR}/,${addsuffix .o,${OBJECT_STEMS}}}
+ALL_OBJECT_XX:=${addsuffix .cxx,${OBJECT_STEMS}}
+ALL_OBJECT_XX:=${addprefix ${OUTPUT_DIR}/,${ALL_OBJECT_XX}}
+
+ALL_OBJECT_SHAPE_CHECKS:=${shell find * -type f -name '*.cpp' -print | perl -n -e 'chomp; substr($$_, -4) = ""; tr|/||ds; print "CHECK_OBJECT($$_)"'}
+
+
+INCLUDE_DIRS+=-I. -I${OUTPUT_DIR} -I../output -I../handlers -I../templates -I../build/include -I/usr/local/include
+
+.SUFFIXES:
+.SUFFIXES: .cpp .hpp .hxx .cxx
+.PATH: ${OBJECT_DIRS}
+.SECONDARY: ${ALL_OBJECT_XX}
+
+CFLAGS+=-std=c++11 -pthread -fpic -g -DMINIMAL_SAVE
+
+DEV_MODE:=${shell [ -f ../DEV_MODE ] && echo "-DDEV_MODE" }
+CFLAGS+=${if ${DEV_MODE},-O0,-O3}
+
+all: output-dir ${LIBS_PATHS}
+
+clean:
+	@echo '--> Cleaning'
+	@rm -fr ${OUTPUT_DIR}
+
+${OUTPUT_DIR}/%.cxx: %.cpp
+	@echo '--> Generating code for object $*'
+	@mkdir -p ${OUTPUT_DIR}/${dir $*}
+	@../build/bin/SQL-to-C++.pl -d ${OUTPUT_DIR} $< > ${OUTPUT_DIR}/$*.log
+	@perl -n -e 'BEGIN { undef $$/ }; map { print -f "$$_.cpp" ? "${OUTPUT_DIR}/$$_.cxx\n" : "" } m/^\#include "(?:..\/)*([A-Za-z0-9\/]+)\.hpp"/smg' $*.hpp ${OUTPUT_DIR}/$*-outside.hxx \
+		| xargs ${MAKE} --no-print-directory
+
+${OUTPUT_DIR}/%.o: ${OUTPUT_DIR}/%.cxx
+	@echo '--> Compiling object $*' 
+	@mkdir -p ${OUTPUT_DIR}/${dir $*}
+	${CXX} ${CFLAGS} -c ${DEV_MODE} -o ${OUTPUT_DIR}/$*.o ${INCLUDE_DIRS} $*.cpp
+
+output-dir:
+	@mkdir -p ${OUTPUT_DIR}
+
+${OUTPUT_DIR}/libObjects.so: ${OBJECT_OBJS}
+	@echo '--> Building object shared library'
+	@${CXX} ${CFLAGS} -shared -o $@ ${OBJECT_OBJS}
+
+${OUTPUT_DIR}/libObjects.a: ${OBJECT_OBJS}
+	@echo '--> Building object static library'
+	@ar -r $@ ${OBJECT_OBJS}
+
+check-db-shape: ${OUTPUT_DIR}/libObjects.a
+	@echo '--> Checking database shape against objects'
+	find * -type f -name '*.cpp' -print | perl -n -e 'chomp; substr($$_, -4) = ""; print qq{#include "$$_.hpp"\n}' > ${OUTPUT_DIR}/check-objects.hxx
+	find * -type f -name '*.cpp' -print | perl -n -e 'chomp; substr($$_, -4) = ""; tr|/||ds; print qq{CHECK_OBJECT($$_)\n}' > ${OUTPUT_DIR}/check-objects.cxx
+	( cd ../src/sbin; gmake check-db-shape && ./check-db-shape)

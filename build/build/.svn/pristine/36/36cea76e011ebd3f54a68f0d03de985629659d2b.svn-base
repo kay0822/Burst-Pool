@@ -1,0 +1,480 @@
+#include <microhttpd.h>
+#include <iostream>
+#include <sstream>
+
+
+#include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <signal.h>
+#include <sys/signalvar.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <pthread_np.h>
+
+
+#include "Request.hpp"
+#include "RegistryHandler.hpp"
+#include "ReqResp.hpp"
+
+#include "database.hpp"
+#include "ftime.hpp"
+#include "server.hpp"
+#include "remote.hpp"
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+#ifndef DEV_MODE
+	const char *CONFIG_FILE = "/home/burstpool/config.js";
+#else
+	const char *CONFIG_FILE = "/home/burstcoin/dompool/config.js";
+#endif
+
+
+// actual config storage with some defaults
+int DB_POOL_SIZE = 10;
+char *BIND_ADDRESS = (char *)"127.0.0.1";
+char *BIND_ADDRESS6 = (char *)NULL;
+int LISTEN_PORT = 9999;
+char *DOC_ROOT = (char *)"static";
+char *LOG_FILE = (char *)"server.log";
+
+char *DB_URI = (char *)"unix:///tmp/mysql.sock";
+char *DB_SCHEMA = (char *)"test";
+char *DB_USER = (char *)"root";
+char *DB_PASSWORD = (char *)"";
+
+
+static const uint64_t POST_BUFFER_SIZE = 65536;
+static bool time_to_die = false;
+
+
+static int post_processor( void *coninfo_cls, enum MHD_ValueKind kind, const char *key, const char *filename, const char *content_type,
+							const char *transfer_encoding, const char *data, uint64_t off, size_t size ) {
+	// reroute to object call
+	ReqResp *req_resp = (ReqResp *) coninfo_cls;
+	
+	return req_resp->req->handler->post_processor( coninfo_cls, kind, key, filename, content_type, transfer_encoding, data, off, size);
+}
+
+
+static int access_handler_initial( void *cls, struct MHD_Connection *connection, const char *url, const char *method, const char *version,
+									const char *upload_data, size_t *upload_data_size, void **con_cls ) {
+	// log it?
+	std::cout << ftime() << " request: " << method << " " << url << std::endl;
+
+	// store request
+	Request *req = new Request();
+
+	if ( strcmp(method, MHD_HTTP_METHOD_GET) == 0 ) {
+		req->method = GET;
+	} else if ( strcmp(method, MHD_HTTP_METHOD_POST) == 0 ) {
+		req->method = POST;
+	} else {
+		// HTTP method not supported
+		delete req;
+		std::cout << ftime() << " " << method << " not supported" << std::endl;
+		
+		// could send 400 BAD REQUEST?
+		return MHD_NO;
+	}
+
+	req->url = url;
+	std::istringstream(version) >> req->version;
+
+	// allocate DB connection
+	// this can block!
+	req->db_con = request_db_connection();
+
+	// parse cookies
+	req->parse_cookies( connection );
+
+	// parse headers
+	req->parse_headers( connection );
+
+	// parse query string (regardless of HTTP mode)
+	req->parse_query( connection );
+
+	// assign default handler
+	req->base_handler = handler_factory();
+
+	// responses can be created from here on
+	Response *resp = new Response;
+
+	// allow base handler to process headers first
+	int result = req->base_handler->process_headers( connection, req, resp );
+	if (result == MHD_NO) {
+		std::cout << ftime() << " BASE HEADERS FAIL: " << url << std::endl;
+
+		delete req;
+		delete resp;
+
+		return MHD_NO;
+	}
+
+	// call handler to determine what to do with URL
+	Handler *handler = req->base_handler->route( connection, req, resp );
+
+	// we need an initial handler for URL
+	if (handler == NULL) {
+		std::cout << ftime() << " no initial handler for " << url << std::endl;
+
+		delete req;
+		delete resp;
+		
+		// could send 404 NOT FOUND?
+		// or special 404 page
+		return MHD_NO;
+	}
+
+	// recursive routing decisions
+	while( Handler *new_handler = handler->route( connection, req, resp ) ) {
+		delete handler;
+
+		handler = new_handler;
+	}
+	// final answer
+	req->handler = handler;
+
+	// needs to be a header-only-processing hook here
+	result = req->handler->process_headers( connection, req, resp );
+	if (result == MHD_NO) {
+		std::cout << ftime() << " HEADERS FAIL: " << url << std::endl;
+
+		delete req;
+		delete resp;
+
+		return MHD_NO;
+	}
+	// short circuit response?
+	if (resp->status_code) {
+		std::cout << ftime() << " HEADERS OK/" << resp->status_code << ": " << url << std::endl;
+		result = resp->send( connection );
+
+		delete req;
+		delete resp;
+
+		return MHD_YES;
+
+	}
+
+	// we're continuing so save state
+	ReqResp *req_resp = new ReqResp( req, resp );
+
+	// if this is a POST request, we need to make a post-processor
+	if (req->method == POST ) {
+		req->post_processor = MHD_create_post_processor( connection, POST_BUFFER_SIZE, post_processor, (void *) req_resp );
+		
+		if (req->post_processor == NULL) {
+			// didn't work
+			std::cout << ftime() << " couldn't create post processor for " << url << std::endl;
+
+			delete req_resp;
+			delete req;
+			delete resp;
+
+			// could send 500 INTERNAL SERVER ERROR?
+			// or special 500 page
+			return MHD_NO;
+		}
+	}
+
+	*con_cls = (void *) req_resp;
+
+	return result;
+}
+
+
+static int access_handler_next( void *cls, struct MHD_Connection *connection, const char *url, const char *method, const char *version,
+									const char *upload_data, size_t *upload_data_size, void **con_cls ) {
+	// short circuited from before?
+	if (*con_cls == NULL)
+		return MHD_YES;
+
+	// continuing previous request...
+	ReqResp *req_resp = (ReqResp *) *con_cls;
+	
+	Request *req = req_resp->req;
+	Response *resp = req_resp->resp;
+
+	if (*upload_data_size != 0) {
+		// not in a POST?
+		if ( req->method != POST ) {
+			std::cout << ftime() << " upload data present for non-POST method " << method << std::endl;
+
+			delete req_resp;
+			delete req;
+			delete resp;
+			
+			// could return 400 BAD REQUEST?
+			return MHD_NO;
+		}
+
+		// process next chunk...
+		MHD_post_process( req->post_processor, upload_data, *upload_data_size );
+		
+		*upload_data_size = 0;
+          
+		return MHD_YES;
+	} 
+
+	// we are done uploading
+	// GOTCHA: destroying post process may call post_processor callback one last time!
+	if (req->method == POST) {
+		MHD_destroy_post_processor( req->post_processor );
+		req->post_processor = NULL;
+		
+		// signal to handler's post process that all is done
+		if (req->handler->post_processor( req_resp, MHD_POSTDATA_KIND, "", "", "", "", NULL, 0, 0) == MHD_NO)
+			return MHD_NO;
+	}
+
+	// actual processing
+	std::cout << ftime() << " processing: " << url << std::endl;
+
+	int result = MHD_NO;
+	try {
+		result = req->handler->process( connection, req, resp );
+	} catch (...) {
+		// result is NO
+	};
+
+	if (result == MHD_YES) {
+		std::cout << ftime() << " OK/" << resp->status_code << " " << method << " " << url << std::endl;
+		result = resp->send( connection );
+	} else {
+		std::cout << ftime() << " FAIL: " << method << " " << url << std::endl;
+	}
+
+	return result;
+}
+
+
+static int access_handler( void *cls, struct MHD_Connection *connection, const char *url, const char *method, const char *version,
+							const char *upload_data, size_t *upload_data_size, void **con_cls ) {
+	// headers only so far?
+	if (*con_cls == NULL)
+		return access_handler_initial( cls, connection, url, method, version, upload_data, upload_data_size, con_cls );
+	else
+		return access_handler_next( cls, connection, url, method, version, upload_data, upload_data_size, con_cls );
+}
+
+
+static void request_completed( void *cls, struct MHD_Connection *connection, void **con_cls, enum MHD_RequestTerminationCode toe ) {
+	// nothing to do?
+	if ( (*con_cls) == NULL) {
+		std::cout << ftime() << " clean-up - nothing to do? connection=0x" << std::hex << (uint64_t)connection << std::dec << std::endl;
+		return;
+	}
+		
+	ReqResp *req_resp = (ReqResp *) *con_cls;
+	
+	Request *req = req_resp->req;
+	Response *resp = req_resp->resp;
+	
+	std::cout << ftime() << " clean-up: " << req->url << std::endl;
+
+	if (req->handler)
+		req->handler->cleanup();
+
+	if (req->base_handler)
+		req->base_handler->cleanup();
+
+	delete req_resp;
+	delete req;
+	delete resp;
+	
+	*con_cls = NULL;
+}
+
+
+static void handle_signal(int sig) {
+	std::cout << "!!! Received sig in thread " << pthread_getthreadid_np() << std::endl;
+	time_to_die = true;
+}
+
+
+static struct MHD_Daemon *init_daemon() {
+	unsigned int flags = MHD_USE_THREAD_PER_CONNECTION | MHD_USE_DEBUG | MHD_USE_POLL;
+
+	#ifdef BIND_ADDRESS6
+		flags |= MHD_USE_IPv6;
+
+		struct sockaddr_in6 sock_addr;
+		bzero(&sock_addr, sizeof(sock_addr));
+		sock_addr.sin6_family = AF_INET6;
+		sock_addr.sin6_port = htons(LISTEN_PORT);
+		int pton_error = inet_pton( AF_INET6, BIND_ADDRESS6, &sock_addr.sin6_addr );
+	#else
+		struct sockaddr_in sock_addr;
+		bzero(&sock_addr, sizeof(sock_addr));
+		sock_addr.sin_family = AF_INET;
+		sock_addr.sin_port = htons(LISTEN_PORT);
+		int pton_error = inet_pton( AF_INET, BIND_ADDRESS, &sock_addr.sin_addr );
+	#endif
+
+	if (!pton_error) {
+		std::cerr << "Couldn't parse bind address" << std::endl;
+		exit(2);
+	}
+
+	if (pton_error == -1) {
+		perror("inet_pton");
+		exit(2);
+	}
+
+	unsigned short port = LISTEN_PORT;
+	
+	// callback to call to check which clients will be allowed to connect
+	MHD_AcceptPolicyCallback apc = NULL;
+	void *apc_cls = NULL;
+	
+	// default handler for all URIs
+	MHD_AccessHandlerCallback dh = &access_handler;
+	void *dh_cls = NULL;
+	
+	unsigned int conn_timeout = 30;
+	unsigned int conn_limit = 4096;
+
+	return MHD_start_daemon( flags, port, apc, apc_cls, dh, dh_cls,
+								MHD_OPTION_NOTIFY_COMPLETED, &request_completed, NULL,
+								MHD_OPTION_SOCK_ADDR, &sock_addr,
+								// Broken? MHD_OPTION_CONNECTION_TIMEOUT, &conn_timeout,
+								MHD_OPTION_CONNECTION_LIMIT, &conn_limit,
+								MHD_OPTION_END );
+}
+
+
+char *config_item( cJSON *root, const char *valueName ) {
+	cJSON *item = cJSON_GetObjectItem(root, valueName);
+
+	if (item == NULL) {
+		std::cerr << "Config file missing '" << valueName << "' entry?" << std::endl;
+		exit(2);
+	}
+
+	if (item->type == 4)
+		return strdup(item->valuestring);
+	else if (item->type == 3)
+		return strdup( std::to_string(item->valueint).c_str() );
+
+	std::cerr << "Can't parse config file '" << valueName << "' entry?" << std::endl;
+	exit(2);
+}
+
+
+
+void config_init() {
+	struct stat sb;
+
+	int fd = open(CONFIG_FILE, O_RDONLY);
+	if (fd == -1) {
+		perror("Can't open config file");
+		exit(1);
+	}
+
+	int ret = fstat(fd, &sb);
+	if (ret == -1) {
+		perror("Can't stat config file");
+		close(fd);
+		exit(1);
+	}
+
+	char *config_buffer = (char *)malloc( sb.st_size );
+	ret = read(fd, config_buffer, sb.st_size );
+	close(fd);
+
+	if (ret == -1) {
+		free(config_buffer);
+		perror("Can't read config file");
+		exit(1);
+	}
+
+	cJSON *root = cJSON_Parse(config_buffer);
+	free(config_buffer);
+
+	if (root == NULL) {
+		std::cerr << "Couldn't parse config file?" << std::endl;
+		exit(2);
+	}
+
+	BIND_ADDRESS = config_item(root, "bindAddress");
+	LISTEN_PORT = safe_strtoull( config_item(root, "listenPort") );
+	DOC_ROOT = config_item(root, "documentRoot");
+	LOG_FILE = config_item(root, "logFile");
+	DB_POOL_SIZE = safe_strtoull( config_item(root, "databasePoolSize") );
+	DB_URI = config_item(root, "databaseURI");
+	DB_SCHEMA = config_item(root, "databaseSchema");
+	DB_USER = config_item(root, "databaseUser");
+	DB_PASSWORD = config_item(root, "databasePassword");
+
+	more_config(root);
+
+	cJSON_Delete(root);
+}
+
+
+int main(int argc, char **argv, char **envp) {
+	close(0);
+
+	config_init();
+
+	int stdout = open( LOG_FILE, O_WRONLY | O_APPEND | O_CREAT, 0664 );
+	dup2(stdout, 1);
+	dup2(stdout, 2);
+
+	std::cout << ftime() << " --- START ---" << std::endl;
+
+	signal( SIGCHLD, SIG_IGN );
+	signal( SIGINT, handle_signal );
+	signal( SIGTERM, handle_signal );
+
+	// block SIGINT and SIGTERM for all threads
+	sigset_t sigs;
+	SIGADDSET(sigs, SIGINT);
+	SIGADDSET(sigs, SIGTERM);
+	pthread_sigmask( SIG_BLOCK, &sigs, NULL );
+
+	database_init();
+
+	Handler *base_handler = handler_factory();
+	base_handler->global_init();
+
+	struct MHD_Daemon *daemon = init_daemon();
+	if (daemon == NULL) {
+		std::cerr << ftime() << " Can't start daemon!" << std::endl;
+		return 1;
+	}
+
+	// reallow SIGINT and SIGTERM just for us
+	pthread_sigmask( SIG_UNBLOCK, &sigs, NULL );
+
+	std::cout << ftime() << " Server ready!" << std::endl;
+
+	while(!time_to_die) {
+		sleep(1);
+	}
+
+	// clean up
+	std::cout << ftime() << " Server shutting down..." << std::endl;
+
+	int listen_fd = MHD_quiesce_daemon(daemon);
+
+	base_handler->global_shutdown();
+	delete base_handler;
+
+	MHD_stop_daemon( daemon );
+
+	close(listen_fd);
+
+	database_shutdown();
+
+	std::cout << ftime() << " Server shut down!" << std::endl;
+
+	return 0;
+}

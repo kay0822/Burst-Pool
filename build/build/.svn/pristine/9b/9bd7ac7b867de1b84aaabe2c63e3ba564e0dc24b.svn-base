@@ -1,0 +1,8 @@
+#include "PayPal/Payment.hpp"
+
+
+PayPal_Payment::PayPal_Payment( std::string paymentID, std::string approval_URL, std::string execute_URL ) {
+	this->paymentID = paymentID;
+	this->approval_URL = approval_URL;
+	this->execute_URL = execute_URL;
+};

@@ -1,0 +1,51 @@
+#include "remote.hpp"
+
+
+static size_t write_data( void *buffer, size_t size, size_t nmemb, std::string *output ) {
+	size_t length = size * nmemb;
+	output->append( (const char *) buffer, length );
+	return length;
+}
+
+
+std::string fetch( std::string url, std::string post_data ) {
+	CURL *curl_handle = curl_easy_init();
+
+	std::string output_string;
+	struct curl_slist *headers = NULL;
+	headers = curl_slist_append( headers, "Accept: application/json" );
+	headers = curl_slist_append( headers, "Accept-Language: en_US" );
+
+	curl_easy_setopt( curl_handle, CURLOPT_URL, url.c_str() );
+	curl_easy_setopt( curl_handle, CURLOPT_NOSIGNAL, (long) 1);
+	curl_easy_setopt( curl_handle, CURLOPT_WRITEFUNCTION, write_data );
+	curl_easy_setopt( curl_handle, CURLOPT_WRITEDATA, &output_string );
+	curl_easy_setopt( curl_handle, CURLOPT_HTTPHEADER, headers );
+
+	if ( ! post_data.empty() )
+		curl_easy_setopt( curl_handle, CURLOPT_POSTFIELDS, post_data.c_str() );
+
+	curl_easy_perform( curl_handle );
+
+	curl_slist_free_all( headers );
+	curl_easy_cleanup( curl_handle );
+
+	return output_string;
+}
+
+
+std::string qJSON( std::string json, std::string param ) {
+	cJSON *root = cJSON_Parse( json.c_str() );
+	if (root == NULL)
+		return "";
+
+	cJSON *item = cJSON_GetObjectItem( root, param.c_str() );
+	std::string result;
+
+	if (item != NULL) {
+		result = item->valuestring;
+	}
+
+	delete root;
+	return result;
+}

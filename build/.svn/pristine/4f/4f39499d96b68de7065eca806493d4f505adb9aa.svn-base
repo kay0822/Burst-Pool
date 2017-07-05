@@ -1,0 +1,67 @@
+/*
+		Create table Rewards (
+			blockID						bigint unsigned not null,
+			accountID					bigint unsigned not null,
+			amount						bigint unsigned not null,
+			is_paid						boolean not null default false,
+			message						varchar(255),
+			tx_id						bigint unsigned,
+			is_confirmed				boolean not null default false,
+			primary key					(blockID, accountID),
+			index						(is_paid, accountID, blockID),
+			index						(is_confirmed, accountID, blockID)
+		);
+*/
+
+#include "Reward.cxx"
+
+SEARCHMOD( before_blockID, uint64_t );
+SEARCHMOD( below_amount, uint64_t );
+
+
+SEARCHPREP {
+	SEARCHPREP_SUPER;
+
+	if ( SEARCHMOD_IS_SET(before_blockID) ) {
+		IDB::Where *new_clause = new IDB::sqlLtUInt64( "blockID", SEARCHMOD_VALUE(before_blockID) );
+		SEARCHPREP_ADD(new_clause);
+	}
+
+	if ( SEARCHMOD_IS_SET(below_amount) ) {
+		IDB::Where *new_clause = new IDB::sqlLtUInt64( "amount", SEARCHMOD_VALUE(below_amount) );
+		SEARCHPREP_ADD(new_clause);
+	}
+
+	SEARCHPREP_END;
+}
+
+
+STATIC uint64_t Reward::total_unpaid() {
+	Reward rewards;
+	rewards.is_paid(false);
+	rewards.search();
+
+	uint64_t total = 0;
+	while( Reward *reward = rewards.result() ) {
+		total += reward->amount();
+		delete reward;
+	}
+
+	return total;
+}
+
+
+STATIC uint64_t Reward::total_paid_by_accountID( uint64_t accountID ) {
+	Reward rewards;
+	rewards.is_paid(true);
+	rewards.accountID(accountID);
+	rewards.search();
+
+	uint64_t total = 0;
+	while( Reward *reward = rewards.result() ) {
+		total += reward->amount();
+		delete reward;
+	}
+
+	return total;
+}

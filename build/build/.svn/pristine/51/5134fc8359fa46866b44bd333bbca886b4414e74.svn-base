@@ -1,0 +1,658 @@
+#ifndef WEBSOCKETHANDLER_HPP_
+#define WEBSOCKETHANDLER_HPP_
+
+#include <map>
+#include <microhttpd.h>
+#include <time.h>
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <pthread_np.h>
+#include "string.h"
+
+#include "Request.hpp"
+#include "Response.hpp"
+#include "ftime.hpp"
+#include "database.hpp"
+#include "Handler.hpp"
+#include "WebSocket.hpp"
+
+/*
+ * OKAY pay attention!
+ *
+ * Each websocket endpoint is derived from the templated class:
+ *
+ * Handlers::API::myWebSocket : public WebSocketHandlerT<Handlers::API::myWebSocket>
+ *
+ * so each websocket handler has its own static mutexes, poll & alert threads, etc.
+ * Functions to manage each endpoint (e.g. init(), wake_up(), etc.) are static
+ * because they operate on the endpoint, not an individual connection.
+ *
+ * On top of this, each connection to the websocket endpoint is its own thread
+ * (by virtue of threaded mode in microhttpd)
+ * so each connection will have their own protected variables like sock, unsent_buffer, etc.
+ *
+ * Each connection also needs to be registered in the map<> so the poll & alert threads
+ * can reference derived websocket handler instances via the socket FD
+ */
+
+
+// 60 seconds max between received packets or websocket gets close()d
+#define WEBSOCKET_TIMEOUT 60
+
+// 1000 ms per poll()
+#define WEBSOCKET_POLL_TIMEOUT 1000
+
+
+
+class WebSocketHandlerIndividual : public Handler {
+	protected:
+		// generic websock info
+		int							sock;
+		uint64_t					unsent_buffer_length;
+		uint8_t 					*unsent_buffer;
+		MHD_UpgradeActionCallback	action_callback;
+		void						*action_cls;
+		time_t						last_recv_when;
+		MHD_Connection				*connection;
+
+		WebSocketHandlerIndividual() {
+			// std::cout << ftime() << typeid(this).name() << ": object created! this=0x" << std::hex << (uint64_t)(this) << std::dec << std::endl;
+			// std::cout << ftime() << " in thread ID " << pthread_getthreadid_np() << std::endl;
+		}
+
+		virtual ~WebSocketHandlerIndividual() {
+			// std::cout << ftime() << typeid(this).name() << ": object deleted! sock=" << sock << ", this=0x" << std::hex << (uint64_t)(this) << std::dec << std::endl;
+			// std::cout << ftime() << " in thread ID " << pthread_getthreadid_np() << std::endl;
+		}
+
+};
+
+
+template <class WebSocketHandlerEndpoint>
+class WebSocketHandler : public WebSocketHandlerIndividual {
+	typedef std::map<MHD_socket, WebSocketHandler *> websocket_map_t;
+
+	private:
+		// These are for updating the class-wide socket->handler map
+		static pthread_cond_t										websocket_cond;
+		static pthread_mutex_t										websocket_mutex;
+
+		static websocket_map_t										websocket_handlers_by_socket;
+
+		static pthread_t											poll_thread;
+
+		static pthread_t											alert_thread;
+		static pthread_cond_t										alert_cond;
+		static pthread_mutex_t										alert_mutex;
+		static std::string											websocket_protocol;
+
+		static bool													time_to_die;
+
+		virtual bool websocket_input( WebSocket *ws ) { return false; };
+		virtual void websocket_alert() { };
+
+	protected:
+
+		static bool													first_websocket_alert;
+
+		// websocket_mutex is LOCKED by caller
+		virtual void close_websocket() {
+			// std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": closing websocket! sock=" << sock << ", this=0x" << std::hex << (uint64_t)(this) << std::dec << std::endl;
+			std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": closing websocket! sock=" << sock << std::endl;
+			// std::cout << ftime() << " in thread ID " << pthread_getthreadid_np() << std::endl;
+
+			websocket_handlers_by_socket.erase( sock );
+
+			// call action callback with CLOSE
+			// WE (i.e. this object instantiation) is cleaned-up by SHMTech build/toolchain or even MHD
+			action_callback(action_cls, MHD_UPGRADE_ACTION_CLOSE);
+		}
+
+
+		// Return bool to indicate whether connection is still valid
+		// if FALSE then this object is as good as dead so the caller should bail out
+		// and definitely not call send_ws again!!
+		bool send_ws( WebSocket *ws ) {
+			uint64_t payload_offset = 0;
+
+			// allow 14 bytes for WebSocket data frame header
+			uint64_t buffer_length = ws->payload_len + 14;
+			// can we get away with putting this on the stack instead of the heap?
+			#ifdef STACK_HEAVY
+				uint8_t buffer[buffer_length];
+			#else
+				uint8_t *buffer = (uint8_t *)malloc( buffer_length );
+			#endif
+
+
+			if ( ws->pack(buffer, &buffer_length, &payload_offset) ) {
+				// all good
+			} else {
+				// uhoh
+				std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": ws.pack failed!" << std::endl;
+				#ifndef STACK_HEAVY
+					free(buffer);
+				#endif
+				return true;
+			}
+
+			// is there already unsent data? tack it on the end... :(
+			if (unsent_buffer_length > 0) {
+				uint8_t *new_unsent_buffer = (uint8_t *)malloc(unsent_buffer_length + buffer_length);
+				strncpy((char *)new_unsent_buffer, (char *)unsent_buffer, unsent_buffer_length);
+				strncpy((char *)new_unsent_buffer + unsent_buffer_length, (char *)buffer, buffer_length);
+				free(unsent_buffer);
+				unsent_buffer = new_unsent_buffer;
+				unsent_buffer_length += buffer_length;
+
+				std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": websocket " << sock << " unsent buffer grown by " << buffer_length << " to " << unsent_buffer_length << std::endl;
+			}
+
+
+			uint64_t n_sent = write(sock, buffer, buffer_length);
+
+			if (n_sent == -1) {
+				if (errno == EAGAIN) {
+					// buffer full - wait for it to clear
+					unsent_buffer_length = buffer_length;
+					unsent_buffer = buffer;
+					return true;
+				} else {
+					perror("Can't send websocket payload");
+
+					#ifndef STACK_HEAVY
+						free(buffer);
+					#endif
+
+					close_websocket();
+					return false;
+				}
+			} else if (n_sent != buffer_length) {
+				// buffer full? - wait for it to clear
+				unsent_buffer_length = buffer_length - n_sent;
+				unsent_buffer = (uint8_t *)malloc(unsent_buffer_length);
+				memcpy(unsent_buffer, buffer+n_sent, unsent_buffer_length);
+
+				std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": Short write of " << n_sent << "/" << buffer_length << " to websocket " << sock <<
+							" - buffering unsent " << unsent_buffer_length << std::endl;
+			} else {
+				// flush
+			}
+
+			#ifndef STACK_HEAVY
+				free(buffer);
+			#endif
+
+			return true;
+		}
+
+	private:
+
+		static void *ws_poll(void *arg) {
+			IDB::Engine *idb = make_db_connection();
+			// implicit:  IO::Object::set_engine( idb );
+
+			bool delayed_wake = false;
+
+			while(!time_to_die) {
+				delayed_wake = false;
+
+				pthread_mutex_lock( &websocket_mutex );
+
+				int nfds = websocket_handlers_by_socket.size();
+
+				// no websockets? sleep until the websocket map is changed
+				if (nfds == 0) {
+					std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << " poll thread: no work - sleeping until websocket map changes" << std::endl;
+
+					// websocket mutex temporarily unlocked at this point
+					if ( !pthread_cond_wait( &websocket_cond, &websocket_mutex ) ) {
+						perror("websocket poll thread: pthread_cond_wait");
+					}
+					// relocked
+
+					// back to top
+					continue;
+				}
+
+
+				// add all websocket's socket FDs
+				#ifdef STACK_HEAVY
+					struct pollfd pollfds[nfds];
+				#else
+					struct pollfd *pollfds = (struct pollfd *)malloc( nfds * sizeof(struct pollfd) );
+				#endif
+
+				int i = 0;
+				for( auto it : websocket_handlers_by_socket ) {
+					pollfds[i].fd = it.first;
+
+					pollfds[i].events = POLLIN;
+					if (it.second->unsent_buffer_length > 0)
+						pollfds[i].events |= POLLOUT;
+
+					pollfds[i].revents = 0;
+
+					i++;
+				}
+
+				// poll for a while, but not forever in case websocket map changes
+				// std::cout << typeid(WebSocketHandlerEndpoint).name() << " poll thread: poll()ing (nfds=" << nfds << ")" << std::endl;
+
+				pthread_mutex_unlock( &websocket_mutex );
+
+				if ( poll(pollfds, nfds, WEBSOCKET_POLL_TIMEOUT) == -1 ) {
+					if ( errno != EINTR )
+						perror("websocket poll thread: poll");
+				}
+
+				// anything actually happen?
+				for(int i=0; i<nfds; i++) {
+					// if flag has been set then short-circuit
+					if (time_to_die)
+						break;
+
+					MHD_socket sock = pollfds[i].fd;
+					auto revents = pollfds[i].revents;
+
+					if (revents == 0)
+						continue;
+
+					pthread_mutex_lock( &websocket_mutex );
+
+					auto it = websocket_handlers_by_socket.find(sock);
+
+					if ( it == websocket_handlers_by_socket.end() ) {
+						// not found? something else must have removed it from the map during our poll()
+						// oh well, on to the next...
+						pthread_mutex_unlock( &websocket_mutex );
+						continue;
+					}
+
+					WebSocketHandler<WebSocketHandlerEndpoint> *individual = it->second;
+					check_db_connection(&idb);
+
+					if ( (revents & POLLNVAL) != 0 ) {
+						// invalid! really bad
+						std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": sock " << sock << " is actually invalid! shutting it down..." << std::endl;
+						// std::cout << "individual=0x" << std::hex << (uint64_t)individual << std::dec << " in thread " << pthread_getthreadid_np() << std::endl;
+						individual->close_websocket();
+						pthread_mutex_unlock( &websocket_mutex );
+						continue;
+					}
+
+					if ( (revents & POLLHUP) != 0 ) {
+						// closed - remove from map
+						std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": sock " << sock << " has hung up/closed! shutting it down..." << std::endl;
+						// std::cout << "individual=0x" << std::hex << (uint64_t)individual << std::dec << " in thread " << pthread_getthreadid_np() << std::endl;
+						individual->close_websocket();
+						pthread_mutex_unlock( &websocket_mutex );
+						continue;
+					}
+
+					if ( individual->last_recv_when < ( time(NULL) - WEBSOCKET_TIMEOUT) ) {
+						// stale
+						std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": sock " << sock << " hasn't responded in a while! shutting it down..." << std::endl;
+						// std::cout << "individual=0x" << std::hex << (uint64_t)individual << std::dec << " in thread " << pthread_getthreadid_np() << std::endl;
+						individual->close_websocket();
+						pthread_mutex_unlock( &websocket_mutex );
+						continue;
+					}
+
+					if ( (revents & POLLOUT) != 0 ) {
+						// we can write() again!
+						uint64_t n_sent = write(sock, individual->unsent_buffer, individual->unsent_buffer_length);
+
+						if (n_sent == -1) {
+							if (errno == EAGAIN) {
+								// buffer full - wait for it to clear
+								pthread_mutex_unlock( &websocket_mutex );
+								continue;
+							} else {
+								perror("Can't send remaining buffer");
+
+								free(individual->unsent_buffer);
+								individual->unsent_buffer = NULL;
+
+								// don't zero unsent_buffer_length in case we use it for diagnostics later
+								// individual->unsent_buffer_length = 0;
+
+								individual->close_websocket();
+								pthread_mutex_unlock( &websocket_mutex );
+								continue;
+							}
+						} else if (n_sent != individual->unsent_buffer_length) {
+							// buffer full? - wait for it to clear
+							uint64_t new_unsent_buffer_length = individual->unsent_buffer_length - n_sent;
+							uint8_t *new_unsent_buffer = (uint8_t *)malloc(new_unsent_buffer_length);
+							memcpy(new_unsent_buffer, individual->unsent_buffer + n_sent, new_unsent_buffer_length);
+
+							std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": Short write of " << n_sent << "/" << individual->unsent_buffer_length << " to websocket " << sock <<
+										" - buffering STILL unsent " << new_unsent_buffer_length << std::endl;
+
+							free(individual->unsent_buffer);
+							individual->unsent_buffer_length = new_unsent_buffer_length;
+							individual->unsent_buffer = new_unsent_buffer;
+						} else {
+							// all good!
+							free(individual->unsent_buffer);
+							individual->unsent_buffer = NULL;
+							individual->unsent_buffer_length = 0;
+						}
+					}
+
+
+					if ( (revents & POLLIN) != 0 ) {
+						// something to read?
+						int n_to_read = 0;
+
+						if ( ioctl(sock, FIONREAD, &n_to_read) == -1 ) {
+							perror("Can't get number of bytes to read via ioctl(FIONREAD)");
+							pthread_mutex_unlock( &websocket_mutex );
+							continue;
+						}
+
+						if (n_to_read == 0) {
+							// socket has closed
+							// std::cout << "POLLIN set yet nothing to read from websocket " << sock << "? shutting it down..." << std::endl;
+							individual->close_websocket();
+							pthread_mutex_unlock( &websocket_mutex );
+							continue;
+						}
+
+						#ifdef STACK_HEAVY
+							uint8_t buffer[n_to_read];
+						#else
+							uint8_t *buffer = (uint8_t *)malloc(n_to_read);
+						#endif
+
+						int n_read = read(sock, buffer, n_to_read);
+
+						if ( n_read == -1 ) {
+							perror("Can't read from websocket");
+
+							#ifndef STACK_HEAVY
+								free(buffer);
+							#endif
+
+							pthread_mutex_unlock( &websocket_mutex );
+							continue;
+						} else if ( n_read != n_to_read ) {
+							perror("Short read from websocket");
+						}
+
+						individual->last_recv_when = time(NULL);
+
+						WebSocket ws;
+						uint64_t offset = 0;
+
+						do {
+							uint64_t next_offset = ws.unpack(buffer + offset, n_read - offset);
+
+							if (next_offset == 0) {
+								std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": Failed to decode websocket frame!" << std::endl;
+								break;
+							}
+
+							std::cout << "Received by websocket " << sock <<
+									": offset = " << (int)offset <<
+									", next_offset = +" << (int)next_offset <<
+									", opcode=" << (int)ws.opcode <<
+									", payload[" << (int)ws.payload_len << "]=" << std::string((const char *)ws.payload_data, ws.payload_len) << std::endl;
+
+							if (ws.opcode == WS_CLOSE) {
+								// websocket closed
+								std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << " websocket poll thread: received CLOSE";
+								if (ws.payload_len == 2)
+									std::cout << ", code: " << (int)ws.close_code;
+								std::cout << std::endl;
+
+								individual->close_websocket();
+								break;  // do {} while();
+							}
+
+							// let endpoint handle input and say whether we need to wake alert thread
+							delayed_wake = delayed_wake || individual->websocket_input( &ws );
+
+							offset += next_offset;
+						} while( offset < n_read );
+
+						free(buffer);
+
+						pthread_mutex_unlock( &websocket_mutex );
+					}
+				}
+
+				#ifndef STACK_HEAVY
+					free(pollfds);
+				#endif
+
+				// delayed wake?
+				if (delayed_wake && !time_to_die) {
+					// std::cout << typeid(WebSocketHandlerEndpoint).name() << " delayed wake up..." << std::endl;
+					wake_up();
+					// std::cout << typeid(WebSocketHandlerEndpoint).name() << " delayed wake up done" << std::endl;
+					delayed_wake = false;
+				}
+			}
+
+			std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": poll shutdown" << std::endl;
+
+			pthread_mutex_lock( &websocket_mutex );
+
+			// tidy up
+			// NOTE: you can't use: for( auto it : websockets ) then close_websocket() as corruption to the map<> occurs
+			std::vector<WebSocketHandler *> individuals;
+			for( auto it : websocket_handlers_by_socket )
+				individuals.push_back( it.second );
+
+			for( auto individual : individuals )
+				individual->close_websocket();
+
+			pthread_mutex_unlock( &websocket_mutex );
+
+			idb->thread_end();
+			delete idb;
+
+			pthread_exit(NULL);
+		}
+
+
+		static void *ws_alert(void *arg) {
+			IDB::Engine *idb = make_db_connection();
+
+			pthread_mutex_lock( &alert_mutex );
+
+			while(!time_to_die) {
+				// we have mutex locked
+				// std::cout << typeid(WebSocketHandlerEndpoint).name() << " alert thread sleeping..." << std::endl;
+
+				// sleep until something happens
+				if ( !pthread_cond_wait( &alert_cond, &alert_mutex ) ) {
+					if (errno != 0)
+						perror("websocket alert thread: pthread_cond_wait");
+				}
+
+				// std::cout << typeid(WebSocketHandlerEndpoint).name() << " alert thread awakens!" << std::endl;
+
+				if (time_to_die)
+					break;
+
+				// std::cout << typeid(WebSocketHandlerEndpoint).name() << " alert thread locking websocket mutex to take map snapshot" << std::endl;
+				pthread_mutex_lock( &websocket_mutex );
+
+				websocket_map_t websocket_map_snapshot = websocket_handlers_by_socket;
+
+				pthread_mutex_unlock( &websocket_mutex );
+				// std::cout << typeid(WebSocketHandlerEndpoint).name() << " alert thread unlocked websocket mutex - map snapshot done" << std::endl;
+
+				first_websocket_alert = true;
+
+				check_db_connection(&idb);
+
+				// call for each individual websocket, wrapped with mutex
+				// this allows individuals to safely call close_websocket()
+				// and allows finer mutex locking
+				for( auto it : websocket_map_snapshot ) {
+					// shortcut for quicker exit
+					if (time_to_die)
+						break;
+
+					// check individual is still valid
+					pthread_mutex_lock( &websocket_mutex );
+
+					if ( websocket_handlers_by_socket.find( it.first ) != websocket_handlers_by_socket.end() )
+						it.second->websocket_alert();
+
+					pthread_mutex_unlock( &websocket_mutex );
+
+					first_websocket_alert = false;
+				}
+
+				// std::cout << typeid(WebSocketHandlerEndpoint).name() << " alert thread unlocked websocket mutex - map snapshot processed" << std::endl;
+			}
+
+			std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": alert thread shutdown" << std::endl;
+
+			// tidy up
+			pthread_mutex_unlock( &alert_mutex );
+
+			idb->thread_end();
+			delete idb;
+
+			pthread_exit(NULL);
+		}
+
+
+		/* this is a per-connection function so not static */
+		void new_websocket( void *cls, struct MHD_Connection *connection, MHD_socket sock, MHD_UpgradeActionCallback action_callback, void *upgrade_action_cls ) {
+			// std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": new websocket opened! sock=" << sock << ", this=0x" << std::hex << (uint64_t)(this) << std::dec << std::endl;
+			std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": new websocket opened! sock=" << sock << std::endl;
+			// std::cout << ftime() << " in thread ID " << pthread_getthreadid_np() << std::endl;
+
+			this->sock = sock;
+			this->unsent_buffer_length = 0;
+			this->unsent_buffer = NULL;
+			this->action_callback = action_callback;
+			this->action_cls = upgrade_action_cls;
+			this->last_recv_when = time(NULL);
+			this->connection = connection;
+
+			// we're done with database connection so release it back to the pool
+			Request *req = (Request *)cls;
+			if (req->db_con) {
+				release_db_connection( req->db_con );
+				req->db_con = NULL;
+			}
+
+			// DEADLOCK OCCURS HERE
+			// could be locked by ws_poll while either:
+			//	a) building poll fds
+			//	b) processing fds with events on
+			// OR in ws_alert while sending alerts to websockets
+			pthread_mutex_lock( &websocket_mutex );
+
+			// add to map
+			websocket_handlers_by_socket[sock] = this;
+
+			// let everyone know there's a new websocket
+			pthread_cond_broadcast( &websocket_cond );
+			// maybe instead, or in addition, to the above we should call
+			// this->websocket_alert();
+			// so just this websocket can output initial info if it wants to
+			// without disturbing the others?
+			// (websocket_alert could also call pthread_cond_broadcast if it wants I guess)
+
+			pthread_mutex_unlock( &websocket_mutex );
+
+			// std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << " websocket initialized: " << sock << std::endl;
+
+			// also alert wake-up
+			WebSocketHandlerEndpoint::wake_up();
+		}
+
+
+		static void new_websocket_redirect( void *cls, struct MHD_Connection *connection, MHD_socket sock, MHD_UpgradeActionCallback action_callback, void *upgrade_action_cls ) {
+			Request *req = (Request *)cls;
+
+			WebSocketHandlerEndpoint *myself = (WebSocketHandlerEndpoint *)(req->handler);
+			myself->new_websocket( cls, connection, sock, action_callback, upgrade_action_cls );
+		}
+
+
+	public:
+
+		// for calling by external code
+		static void wake_up() {
+			pthread_mutex_lock( &alert_mutex );
+			pthread_cond_broadcast( &alert_cond );
+			pthread_mutex_unlock( &alert_mutex );
+		}
+
+
+		static void init() {
+			time_to_die = false;
+
+			// run threads to handle websockets
+			pthread_mutex_init( &websocket_mutex, NULL );
+			pthread_cond_init( &websocket_cond, NULL );
+
+			if ( pthread_create( &poll_thread, NULL, &WebSocketHandlerEndpoint::ws_poll, NULL ) ) {
+				std::cerr << "Can't create websocket poll thread!" << std::endl;
+				exit(1);
+			}
+
+			pthread_mutex_init( &alert_mutex, NULL );
+			pthread_cond_init( &alert_cond, NULL );
+
+			if ( pthread_create( &alert_thread, NULL, &WebSocketHandlerEndpoint::ws_alert, NULL ) ) {
+				std::cerr << "Can't create websocket alert thread!" << std::endl;
+				exit(1);
+			}
+		}
+
+
+		static void shutdown() {
+			std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": shutdown" << std::endl;
+			time_to_die = true;
+
+			// exit poll thread
+			pthread_cond_broadcast( &websocket_cond );
+			std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": shutting down poll thread" << std::endl;
+			pthread_join( poll_thread, NULL );
+
+			// wake up alert thread so it can exit
+			pthread_cond_broadcast( &alert_cond );
+			std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": shutting down alert thread" << std::endl;
+			pthread_join( alert_thread, NULL );
+
+			std::cout << ftime() << typeid(WebSocketHandlerEndpoint).name() << ": shutdown DONE!" << std::endl;
+		}
+
+
+		int process( struct MHD_Connection *connection, Request *req, Response *resp ) {
+			return resp->upgrade_websocket( req, websocket_protocol, &WebSocketHandlerEndpoint::new_websocket_redirect );
+		}
+};
+
+
+#define WSH_INIT(CLASS,TYPE,VAR,VALUE)			\
+	template<>									\
+	TYPE WebSocketHandler<CLASS>::VAR = VALUE;
+
+
+#define WEBSOCKET_HANDLER_INIT(CLASS,PROTO)																															\
+		WSH_INIT(CLASS,pthread_cond_t,websocket_cond,PTHREAD_COND_INITIALIZER)																						\
+		WSH_INIT(CLASS,pthread_mutex_t,websocket_mutex,PTHREAD_MUTEX_INITIALIZER)																					\
+			template<>																																				\
+			std::map<MHD_socket,WebSocketHandler<CLASS>*> WebSocketHandler<CLASS>::websocket_handlers_by_socket = std::map<MHD_socket,WebSocketHandler<CLASS>*>();	\
+		WSH_INIT(CLASS,pthread_t,poll_thread,pthread_self())																										\
+		WSH_INIT(CLASS,pthread_t,alert_thread,pthread_self())																										\
+		WSH_INIT(CLASS,pthread_cond_t,alert_cond,PTHREAD_COND_INITIALIZER)																							\
+		WSH_INIT(CLASS,pthread_mutex_t,alert_mutex,PTHREAD_MUTEX_INITIALIZER)																						\
+		WSH_INIT(CLASS,std::string,websocket_protocol,PROTO)																										\
+		WSH_INIT(CLASS,bool,time_to_die,false)																														\
+		WSH_INIT(CLASS,bool,first_websocket_alert,false)
+
+
+#endif

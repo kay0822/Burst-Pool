@@ -1,0 +1,67 @@
+#include "webAPI/getCurrentShares.hpp"
+
+#include "mining-info.hpp"
+
+#include "Share.hpp"
+#include "Block.hpp"
+
+#include "cJSON.hpp"
+
+
+
+static cJSON *generate_account_info( uint64_t accountID ) {
+	cJSON *account_info = cJSON_CreateObject();
+
+	Account *account = Account::load_with_checking(accountID);
+
+	if (account) {
+		cJSON_AddStringToObject( account_info, (char *)"account", account->account_RS_string().c_str() );
+		cJSON_AddStringToObject( account_info, (char *)"accountId", std::to_string(accountID).c_str() );
+		cJSON_AddNumberToObject( account_info, (char *)"accountId32", accountID & 0xFFFFFFFF );
+		cJSON_AddStringToObject( account_info, (char *)"accountName", account->account_name().c_str() );
+		cJSON_AddNumberToObject( account_info, (char *)"estimatedCapacityTB", account->estimated_capacity() / 1024.0 );
+
+		delete account;
+	} else {
+		cJSON_AddStringToObject( account_info, (char *)"account", (char *)"???" );
+		cJSON_AddStringToObject( account_info, (char *)"accountId", (char *)"0" );
+		cJSON_AddNumberToObject( account_info, (char *)"accountId32", 0 );
+		cJSON_AddStringToObject( account_info, (char *)"accountName", (char *)"???" );
+		cJSON_AddNumberToObject( account_info, (char *)"estimatedCapacityTB", 0 );
+	}
+
+	return account_info;
+}
+
+int Handlers::webAPI::getCurrentShares::process( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	Share shares;
+	shares.blockID( mining_info_cache.blockID );
+	shares.search();
+
+	cJSON *array = cJSON_CreateArray();
+
+	while( Share *share = shares.result() ) {
+		cJSON *entry = generate_account_info( share->accountID() );
+		cJSON_AddNumberToObject( entry, (char *)"share", share->share_fraction() * 1000 );
+		cJSON_AddNumberToObject( entry, (char *)"deadline", share->deadline() );
+		cJSON_AddStringToObject( entry, (char *)"deadline_string", share->deadline_string().c_str() );
+		cJSON_AddItemToArray(array, entry);
+
+		delete share;
+	}
+
+	cJSON *root = cJSON_CreateObject();
+	cJSON_AddNumberToObject( root, (char *)"block", mining_info_cache.blockID );
+	cJSON_AddItemToObject( root, (char *)"shares", array );
+
+	char *json = cJSON_Print(root);
+
+	resp->status_code = 200;
+	resp->content = std::string(json);
+
+	free(json);
+
+	cJSON_Delete(root);
+
+	return MHD_YES;
+}

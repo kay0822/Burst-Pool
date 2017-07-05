@@ -1,0 +1,204 @@
+#include "IDB/resultset.h"
+#include "IDB/engine.h"
+
+#include <cppconn/connection.h>
+#include <cppconn/driver.h>
+#include <time.h>
+#include <stdlib.h>
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+namespace IDB {
+	sql::Connection *Engine::connection() {
+		return con;
+	}
+
+	Engine::~Engine() {
+		if (con != NULL)
+			delete con;
+	}
+
+	void Engine::thread_end() {
+		if (con != NULL) {
+			delete con;
+			con = NULL;
+		}
+
+		sql::Driver *driver = get_driver_instance();
+		driver->threadEnd();
+	}
+
+	long long int Engine::fetchInt( std::string col, Tables *tables, Where *where, Options *options ) {
+		std::vector<std::string>		cols;
+		long long int					i = 0;
+
+		cols.push_back(col);
+
+		IDB::ResultSet *res = this->select(&cols, tables, where, options);
+
+		if (res->next()) {
+			i = res->getUInt64(1);
+		}
+
+		delete res;
+
+		return i;
+	}
+
+	std::string Engine::fetchString( std::string col, Tables *tables, Where *where, Options *options ) {
+		std::vector<std::string>		cols;
+		std::string						s;
+
+		cols.push_back(col);
+
+		IDB::ResultSet *res = this->select(&cols, tables, where, options);
+
+		if (res->next()) {
+			s = res->getString(1);
+		}
+
+		delete res;
+
+		return s;
+	}
+
+	IDB::ResultSet *Engine::select( std::vector<std::string> *cols, Tables *tables, Where *where, Options *options ) {
+		std::string sql = "SELECT ";
+
+		std::string delimiter = "";
+		for(std::vector<std::string>::const_iterator it = cols->begin(); it != cols->end(); it++) {
+			sql += delimiter + *it;
+			delimiter = ", ";
+		}
+
+		if (tables) {
+			sql += " FROM " + tables->toString();
+		}
+
+		if (where) {
+			sql += " WHERE " + where->toString();
+		}
+
+		if (options) {
+			sql += options->toString();
+		}
+
+		sql::PreparedStatement *pstmt = con->prepareStatement(sql);
+
+		unsigned int bind_offset = 1;
+		
+		if (tables) {
+			bind_offset = tables->bind(pstmt, bind_offset);
+		}
+
+		if (where) {
+			bind_offset = where->bind(pstmt, bind_offset);
+		}
+
+		if (options) {
+			bind_offset = options->bind(pstmt, bind_offset);
+		}
+
+		IDB::ResultSet *res = (IDB::ResultSet *) pstmt->executeQuery();
+
+		delete pstmt;
+
+		return res;
+	}
+
+	int Engine::writerow(std::string table, std::vector<IDB::Where *> updates) {
+		std::vector<IDB::Where *>::const_iterator	it;
+		std::string									delimiter;
+
+		std::string sql = "INSERT INTO " + table + " SET ";
+		delimiter = "";
+		for(it = updates.begin(); it != updates.end(); it++) {
+			sql += delimiter + (*it)->toString();
+			delimiter = ", ";
+		}
+
+		sql += " ON DUPLICATE KEY UPDATE ";
+		delimiter = "";
+		for(it = updates.begin(); it != updates.end(); it++) {
+			sql += delimiter + (*it)->toString();
+			delimiter = ", ";
+		}
+
+		// if there are no columns to set/update then use special form of SQL:
+		if ( updates.empty() )
+			sql = "INSERT INTO " + table + " values ()";
+
+		sql::PreparedStatement *pstmt = con->prepareStatement(sql);
+
+		unsigned int bind_offset = 1;
+		for(unsigned int part=0; part<2; part++) {
+			for(it = updates.begin(); it != updates.end(); it++) {
+				bind_offset = (*it)->bind(pstmt, bind_offset);
+			}
+		}
+
+		int res = pstmt->executeUpdate();
+
+		delete pstmt;
+
+		return res;
+	}
+
+	int Engine::deleterow(std::string table, IDB::Where *where_clause) {
+		std::string sql = "DELETE FROM " + table + " WHERE " + where_clause->toString();
+
+		sql::PreparedStatement *pstmt = con->prepareStatement(sql);
+
+		int bind_offset = 1;
+
+		bind_offset = where_clause->bind(pstmt, bind_offset);
+
+		int res = pstmt->executeUpdate();
+
+		delete pstmt;
+
+		return res;
+	}
+
+	int Engine::execute(std::string sql) {
+		sql::Statement *stmt = con->createStatement();
+		int res = stmt->execute(sql);
+
+		delete stmt;
+
+		return res;
+	}
+
+
+	std::string Engine::from_unixtime( time_t t ) {
+		char buf[40];
+		struct tm tm;
+
+		strftime(buf, sizeof(buf), "%Y%m%d%H%M%S", localtime_r( &t, &tm ) );
+
+		return std::string( buf );
+	}
+
+
+	time_t Engine::unix_timestamp( std::string ts ) {
+		if (ts == "0000-00-00 00:00:00")
+			return (time_t) 0;
+
+		struct tm tm;
+
+		tm.tm_year = strtoul( ts.substr(0, 4).c_str(), NULL, 10 ) - 1900;
+		tm.tm_mon = strtoul( ts.substr(5, 2).c_str(), NULL, 10) - 1;
+		tm.tm_mday = strtoul( ts.substr(8, 2).c_str(), NULL, 10);
+		tm.tm_hour = strtoul( ts.substr(11, 2).c_str(), NULL, 10);
+		tm.tm_min = strtoul( ts.substr(14, 2).c_str(), NULL, 10);
+		tm.tm_sec = strtoul( ts.substr(17, 2).c_str(), NULL, 10);
+
+		// get mktime() to work out if DST is in effect
+		tm.tm_isdst = -1;
+
+		return mktime( &tm );
+	}
+}

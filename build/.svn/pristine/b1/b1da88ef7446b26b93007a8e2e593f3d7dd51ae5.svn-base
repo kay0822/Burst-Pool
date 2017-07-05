@@ -1,0 +1,209 @@
+HTML, BODY {
+	width:					100%;
+	height:					100%;
+	border:					0px;
+	padding:				0px;
+	margin:					0px;
+}
+
+BODY {
+	background:				#363f48;
+	font-family:			Roboto;
+	color:					white;
+}
+
+
+
+.table-container {
+	overflow-y:				scroll;
+	position:				absolute;
+	height:					auto;
+	padding:				2px;
+	margin:					2px;
+	width:					30%;
+}
+
+
+
+.shares-table {
+	font-size:				smaller;
+	width:					100%;
+}
+
+.shares-table TD {
+	text-align:				right;
+}
+
+.shares-table TD:first-child {
+	text-align:				center;
+}
+
+.shares-table CAPTION {
+	background:				#009688;
+	padding:				5px;
+}
+
+
+
+
+#current-shares-chart {
+	position:				absolute;
+	width:					20%;
+	height:					40%;
+	left:					10%;
+	top:					10%;
+}
+
+#current-shares-graph {
+	position:				absolute;
+	width:					20%;
+	height:					40%;
+	left:					10%;
+	top:					10%;
+}
+
+#current-shares-container {
+	top:					50%;
+	left:					0px;
+	bottom:					0px;
+}
+
+#current-shares-table {
+}
+
+
+
+#historic-shares-chart {
+	position:				absolute;
+	width:					30%;
+	height:					50%;
+	top:					0px;
+	right:					0px;
+}
+
+#historic-shares-container {
+	top:					50%;
+	right:					0px;
+	bottom:					0px;
+}
+
+#historic-shares-table {
+}
+
+
+
+#current-block-info {
+	position:				absolute;
+	width:					30%;
+	height:					auto;
+	left:					0px;
+	top:					0px;
+	border:					2px solid black;
+	border-radius:			8px;
+	padding:				2px;
+	margin:					2px;
+	text-align:				center;
+	background:				#ff5722;
+	font-weight:			bold;
+}
+
+#current-block-info A:link, #current-block-info A:focus,
+#current-block-info A:hover, #current-block-info A:visited {
+	color:					white;
+	text-decoration:		none;
+	font-style:				italic;
+}
+
+
+
+#timer {
+	position:				absolute;
+	width:					10%;
+	height:					40%;
+	top:					10%;
+	left:					0px;
+}
+
+
+
+#awards-tables {
+	position:				absolute;
+	left:					30%;
+	top:					0px;
+	width:					40%;
+	height:					auto;
+	font-size:				smaller;
+	padding:				2px;
+	margin:					2px;
+}
+
+.awards-table {
+	padding:				2px;
+	margin:					2px;
+	margin-bottom:			20px;
+	width:					100%;
+}
+
+.awards-table TD {
+	text-align:				right;
+}
+
+.awards-table TD:first-child {
+	text-align:				center;
+}
+
+.awards-table CAPTION {
+	background:				#009688;
+	padding:				5px;
+}
+
+.awards-table .award {
+	padding-left:			24px;
+	background-position:	left;
+	background-repeat:		no-repeat;
+	background-size:		20px 20px;
+}
+
+
+
+#recent-blocks-container {
+	top:					50%;
+	left:					30%;
+	bottom:					0px;
+	width:					40%;
+}
+
+#recent-blocks-table {
+	font-size:				smaller;
+	width:					100%;
+}
+
+#recent-blocks-table TD {
+	text-align:				center;
+}
+
+#recent-blocks-container CAPTION {
+	background:				#009688;
+	padding:				5px;
+}
+
+
+.deadline-with-miner {
+	position:				relative;
+	padding-right:			20px;
+}
+
+.deadline-with-miner::after {
+	position:				absolute;
+	right:					2px;
+	content:				attr(miner-char);
+}
+
+.deadline-with-miner:hover::after {
+	background-color:		white;
+	content:				attr(miner);
+}
+
+.deadline-with-miner[miner-char="B"]::after {
+	content:				url("/images/Blago.jpg");
+}

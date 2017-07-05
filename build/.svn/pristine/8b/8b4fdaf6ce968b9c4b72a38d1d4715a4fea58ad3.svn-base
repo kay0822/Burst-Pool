@@ -1,0 +1,80 @@
+#ifndef MINING_INFO_HPP
+#define MINING_INFO_HPP
+
+#include <pthread.h>
+#include <stdint.h>
+#include <map>
+#include <microhttpd.h>
+#include <time.h>
+#include <string>
+
+extern "C" {
+	#include "shabal.h"
+}
+
+
+// 10 minutes is about 3ish blocks
+extern uint64_t ACCOUNT_UPDATE_TIMEOUT;
+// our account ID (BURST-BANK-DT2R-BM8G-FYFRH)
+extern uint64_t OUR_ACCOUNT_ID;
+// our account passphrase but encoded
+// (temporarily decoded in memory when needed)
+extern char *OUR_ACCOUNT_PASSPHRASE;
+// deadline maximum
+// 30 days
+extern uint64_t DEADLINE_MAX;
+// deadline really bad
+// 100 years?
+extern uint64_t DEADLINE_BAD;
+// how many blocks to go back to determine historic shares
+extern uint64_t HISTORIC_BLOCK_COUNT;
+// how many blocks to go back to estimate miner's capacity
+extern uint64_t HISTORIC_CAPACITY_BLOCK_COUNT;
+// number of seconds that must elapse before a miner can submit a nonce again
+extern uint64_t SUBMIT_NONCE_COOLOFF;
+// pool fee (e.g. 0.02 is 2%)
+extern double POOL_FEE;
+// pool fee account (BURST-PFEE-GLEC-243X-6ESTS)
+extern uint64_t POOL_FEE_ACCOUNTID;
+// minimum amount before a payout is made to a miner
+extern uint64_t MINIMUM_PAYOUT;
+
+
+#define GENESIS_TIMESTAMP 1407726000
+
+#define BURST_TO_NQT 100000000UL
+
+#define PAYMENT_SEND_FEE (1 * BURST_TO_NQT)
+
+
+#define SCOOP_SIZE			64
+#define SCOOPS_PER_PLOT		4096
+#define PLOT_SIZE			(SCOOP_SIZE * SCOOPS_PER_PLOT)
+
+#define HASH_SIZE			32
+#define HASH_CAP			4096
+
+
+extern pthread_mutex_t mining_info_mutex;
+
+typedef struct {
+	std::string			json;
+	uint64_t			blockID;
+	uint64_t			base_target;
+	uint8_t				gen_sig[32];
+	std::string			gen_sig_str;
+	uint32_t			scoop;
+	uint8_t				new_gen_sig[32];
+	time_t				new_block_when;
+	uint64_t			prev_base_target;
+	uint8_t				prev_gen_sig[32];
+	std::string			prev_gen_sig_str;
+	uint32_t			prev_scoop;
+	uint64_t			prev_block_reward;
+	time_t				prev_block_when;
+	uint64_t			n_potential_miners;
+} mining_info_cache_t;
+
+extern mining_info_cache_t mining_info_cache;
+
+#endif

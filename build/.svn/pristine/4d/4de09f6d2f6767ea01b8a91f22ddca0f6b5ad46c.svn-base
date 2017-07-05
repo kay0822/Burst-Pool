@@ -1,0 +1,12 @@
+/*
+		Create table Rewards (
+			blockID						bigint unsigned not null,
+			accountID					bigint unsigned not null,
+			amount						bigint unsigned not null,
+			is_paid						boolean not null default false,
+			primary key					(blockID, accountID),
+			index						(is_paid, accountID, blockID)
+		);
+*/
+
+#include "Reward.cxx"

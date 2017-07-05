@@ -1,0 +1,4 @@
+include ../build/gmake/objects.gmk
+
+${OUTPUT_DIR}/Block.o: ${OUTPUT_DIR}/Share.cxx
+${OUTPUT_DIR}/Account.o: ${OUTPUT_DIR}/Share.cxx

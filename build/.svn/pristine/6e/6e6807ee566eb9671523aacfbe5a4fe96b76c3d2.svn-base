@@ -1,0 +1,138 @@
+#include <stdint.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <signal.h>
+
+#include "server.hpp"
+#include "ftime.hpp"
+#include "config_loader.hpp"
+#include "config.hpp"
+#include "database.hpp"
+#include "remote.hpp"
+#include "mining-info.hpp"
+
+#include "Block.hpp"
+#include "Nonce.hpp"
+#include "Burst.hpp"
+
+#include "blockchain_common.hpp"
+
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+static volatile bool time_to_die = false;
+
+
+// bleh this shouldn't be here
+Handler *handler_factory() { return NULL; }
+
+
+static void send_miner_bonuses() {
+	time_t transactions_from_when = time(NULL);
+
+	while(!time_to_die) {
+		// check bonus balance
+		Burst burst(BURST_SERVER);
+
+		std::vector<uint64_t> new_transactions = burst.get_recent_transactions( "BURST-" + BONUS_ACCOUNT_RS, transactions_from_when, false );
+
+		if ( new_transactions.size() > 0 ) {
+			uint64_t latest_blockID = Block::latest_blockID();
+
+			for(int i=0; i<new_transactions.size(); i++) {
+				std::cout << "Examining transaction " << new_transactions[i] << std::endl;
+
+				std::string tx_json = burst.get_transaction( new_transactions[i] );
+
+				cJSON *root = cJSON_Parse( tx_json.c_str() );
+
+				if (root != NULL) {
+					if ( cJSON_GetObjectItem( root, "subtype") ) {
+						uint64_t subtype = cJSON_GetObjectItem( root, "subtype")->valueint;
+
+						// payments only please!
+						if (subtype != 0)
+							continue;
+
+						std::string recipientRS = cJSON_GetObjectItem( root, "recipientRS" )->valuestring;
+						std::string senderRS = cJSON_GetObjectItem( root, "senderRS" )->valuestring;
+
+						// if we're not the receipient (e.g. we're the sender) then ignore it
+						if ( recipientRS != "BURST-" + BONUS_ACCOUNT_RS )
+							continue;
+
+						// ignore zero-amount transactions too
+						uint64_t balanceNQT = safe_strtoull( cJSON_GetObjectItem( root, "amountNQT" )->valuestring );
+						if ( !balanceNQT )
+							continue;
+
+						// payout!
+						std::cout << ftime() << "Bonus transaction " << new_transactions[i] << ": " << (double)balanceNQT/BURST_TO_NQT << std::endl;
+
+						transactions_from_when = time(NULL);
+
+						std::string message;
+						cJSON *attachment = cJSON_GetObjectItem( root, "attachment" );
+						if (attachment != NULL) {
+							cJSON *messageJSON = cJSON_GetObjectItem( attachment, "message" );
+							if (messageJSON != NULL)
+								message = messageJSON->valuestring;
+						}
+
+						std::unique_ptr<Share> shares( Share::historic_shares( latest_blockID - 1, HISTORIC_BLOCK_COUNT ) );
+						uint64_t num_shares = shares->search();
+						uint64_t feesNQT = num_shares * PAYMENT_SEND_FEE;
+						uint64_t feeless_balanceNQT = balanceNQT - feesNQT;
+
+						while( Share *share = shares->result() ) {
+							uint64_t amount = feeless_balanceNQT * share->share_fraction();
+							uint64_t tx_id = burst.send_money( BONUS_ACCOUNT_PASSPHRASE, "BURST-" + Account::accountID_to_RS_string( share->accountID() ), amount, false, message );
+							if (!tx_id) {
+								std::cout << "Didn't send " << (amount/BURST_TO_NQT) << " to " << share->accountID() << std::endl;
+							} else {
+								std::cout << "Sent " << (amount/BURST_TO_NQT) << " to " << share->accountID() << " with tx ID " << tx_id << std::endl;
+							}
+						}
+					}
+
+					cJSON_Delete(root);
+				}
+			}
+		}
+
+		sleep(3);
+	}
+}
+
+
+static void handle_signal(int sig) {
+	std::cout << ftime() << "!!! Received sig " << sig << " !!!" << std::endl;
+	time_to_die = true;
+}
+
+
+int main() {
+	close(0);
+
+	config_init();
+
+	std::cout << ftime() << "--- START ---" << std::endl;
+
+	database_init();
+
+	signal( SIGCHLD, SIG_IGN );
+	signal( SIGINT, handle_signal );
+	signal( SIGTERM, handle_signal );
+
+	IDB::Engine *idb = make_db_connection();
+	IO::Object::set_engine( idb );
+
+	send_miner_bonuses();
+
+	std::cout << ftime() << "--- STOP ---" << std::endl;
+
+	return 0;
+}

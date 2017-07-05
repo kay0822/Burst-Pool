@@ -1,0 +1,57 @@
+/*
+		Create table Shares (
+			blockID						bigint unsigned not null,
+			accountID					bigint unsigned not null,
+			share_fraction				double not null,
+			deadline					bigint unsigned not null,
+			deadline_string				varchar(255) not null,
+			primary key					(blockID, accountID),
+			index						(blockID, share_fraction)
+		);
+*/
+
+#include "Share.cxx"
+
+SEARCHMOD( before_blockID, uint64_t );
+SEARCHMOD( after_blockID, uint64_t );
+SEARCHMOD( historic_average, bool );
+
+
+SEARCHPREP {
+	SEARCHPREP_SUPER;
+
+	if ( SEARCHMOD_IS_SET(before_blockID) ) {
+		IDB::Where *new_clause = new IDB::sqlLtUInt64( "blockID", SEARCHMOD_VALUE(before_blockID) );
+		SEARCHPREP_ADD( new_clause );
+	}
+
+	if ( SEARCHMOD_IS_SET(after_blockID) ) {
+		IDB::Where *new_clause = new IDB::sqlGtUInt64( "blockID", SEARCHMOD_VALUE(after_blockID) );
+		SEARCHPREP_ADD( new_clause );
+	}
+
+	if ( SEARCHMOD_IS_SET(historic_average) ) {
+		ps->options->order_by = "share_fraction DESC";
+		ps->options->group_by = "accountID";
+		// replace cols with our own version
+		ps->cols->clear();
+		// this needs to have the same order and number of columns:
+		ps->cols->push_back( "blockID" );
+		ps->cols->push_back( "accountID" );
+		ps->cols->push_back( "sum(share_fraction)/" + std::to_string( SEARCHMOD_VALUE(before_blockID) - SEARCHMOD_VALUE(after_blockID) - 1 ) + " as share_fraction" );
+		ps->cols->push_back( "null" );
+		ps->cols->push_back( "null" );
+	}
+
+	SEARCHPREP_END;
+}
+
+
+STATIC Share *Share::historic_shares( uint64_t to_blockID, uint64_t block_count ) {
+	Share *shares = new Share();
+	shares->after_blockID( to_blockID - block_count );
+	// include this block
+	shares->before_blockID( to_blockID + 1 );
+	shares->historic_average(true);
+	return shares;
+}

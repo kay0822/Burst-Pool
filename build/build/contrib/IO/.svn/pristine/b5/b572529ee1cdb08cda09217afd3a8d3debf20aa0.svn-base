@@ -1,0 +1,104 @@
+#ifndef IO_OBJECT_INCLUDED
+#define IO_OBJECT_INCLUDED
+
+#include "IO/PreppedSearch.h"
+#include <IDB/IDB.h>
+#include <boost/thread.hpp>
+#include <vector>
+#include <map>
+#include <string>
+
+namespace IO {
+	class Object {
+		private:
+			unsigned int search_limit;
+			unsigned int search_offset;
+
+			static boost::thread_specific_ptr<IDB::Engine> *idbe_ptr;
+			static boost::thread_specific_ptr<bool> *read_only_ptr;
+			
+		protected:
+			// any current search?
+			IDB::ResultSet *results;
+
+			static inline IDB::Engine *idbe() {
+				return idbe_ptr->get();
+			};
+
+		public:
+			typedef enum { ORDER_BY_ASC, ORDER_BY_DESC } order_direction_t;
+			static const std::string order_direction_names[];
+
+			Object();
+			virtual ~Object();
+
+			static void set_engine( IDB::Engine *idbe );
+			static void set_read_only( bool read_only );
+			
+			static int start_transaction();
+			static void commit();
+			static void rollback();
+
+			static unsigned int get_lock( std::string lock, double timeout );
+			static void release_lock( std::string lock );
+
+			virtual bool has_field( std::string field ) =0;
+			virtual bool exists_by_name( std::string field ) =0;
+			virtual bool defined_by_name( std::string field ) =0;
+			virtual bool is_key_by_name( std::string field ) =0;
+
+			virtual unsigned int get_UInt_by_name( std::string field ) =0;
+			virtual unsigned long long int get_UInt64_by_name( std::string field ) =0;
+			virtual int get_Int_by_name( std::string field ) =0;
+			virtual std::string get_String_by_name( std::string field ) =0;
+			virtual bool get_Boolean_by_name( std::string field ) =0;
+			virtual unsigned char *get_Blob_by_name( std::string field ) =0;
+			virtual double get_Double_by_name( std::string field ) =0;
+			virtual time_t get_Timestamp_by_name( std::string field ) =0;
+
+			virtual std::string _table() =0;
+
+			virtual void delete_obj();
+			virtual void _delete_obj() =0;
+
+			virtual void save();
+			virtual void _save() =0;
+
+			virtual unsigned long long int limit();
+			virtual void limit( unsigned long long int new_limit );
+
+			virtual unsigned long long int offset();
+			virtual void offset( unsigned long long int new_offset );
+
+			virtual PreppedSearch *search_prep();
+			virtual PreppedSearch *search_prep( IDB::Options *options, IO::Object *additional );
+			virtual PreppedSearch *search_prep( IDB::Options *options, std::vector<IO::Object *> *additional );
+			virtual PreppedSearch *_search_prep( IDB::Options *options, std::vector<IO::Object *> *additional ) =0;
+
+			virtual IDB::Where *_search_prep_columns() =0;
+			virtual IDB::Where *_search_prep_join( std::map<std::string, std::string> *col_to_table ) =0;
+
+			// generic search (returns row count)
+			virtual unsigned long long int search();
+			// search with options
+			virtual unsigned long long int search( IDB::Options *options );
+			// search with (optional) options and ONE other object
+			virtual unsigned long long int search( IDB::Options *options, IO::Object *additional );
+			// search with (optional) options and (optional) other objects
+			virtual unsigned long long int search( IDB::Options *options, std::vector<IO::Object *> *additional );
+		
+			virtual IO::Object *result() =0;
+
+			virtual unsigned long long int count();
+			virtual unsigned long long int count( IDB::Options *options, std::vector<IO::Object *> *additional );
+
+			virtual IO::Object *present() =0;
+			virtual IO::Object *present( IDB::Options *options, std::vector<IO::Object *> *additional ) =0;
+			virtual IO::Object *present_or_self() =0;
+
+			virtual void search_and_destroy();
+			virtual void search_and_destroy( IDB::Options *options, std::vector<IO::Object *> *additional );
+	};
+};
+
+#endif

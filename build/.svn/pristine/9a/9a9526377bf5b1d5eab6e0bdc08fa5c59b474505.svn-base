@@ -1,0 +1,182 @@
+#include <string.h>
+
+#include "Share.hpp"
+#include "Block.hpp"
+
+#include "webAPI/updates.hpp"
+
+#include "WebSocket.hpp"
+#include "remote.hpp"
+#include "mining-info.hpp"
+#include "cJSON.hpp"
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+WEBSOCKET_HANDLER_INIT(Handlers::webAPI::updates, "updates");
+
+
+static cJSON *generate_account_info( uint64_t accountID ) {
+	cJSON *account_info = cJSON_CreateObject();
+	cJSON_AddStringToObject( account_info, (char *)"account", Account::accountID_to_RS_string(accountID).c_str() );
+	cJSON_AddStringToObject( account_info, (char *)"accountId", std::to_string(accountID).c_str() );
+	cJSON_AddNumberToObject( account_info, (char *)"accountId32", accountID & 0xFFFFFFFF );
+
+	std::string account_name = Account::fetch_account_name_by_accountID( accountID );
+	if ( !account_name.empty() )
+		cJSON_AddStringToObject( account_info, (char *)"accountName", account_name.c_str() );
+
+	return account_info;
+}
+
+
+static void add_account_award( cJSON *awards, char *award_name, Nonce *nonce, time_t start_time ) {
+	if (nonce) {
+		cJSON *account_info = generate_account_info( nonce->accountID() );
+
+		if (mining_info_cache.prev_block_when > 0)
+			cJSON_AddNumberToObject( account_info, (char *)"submittedWhen", nonce->submitted_when() - start_time );
+
+		delete nonce;
+
+		cJSON_AddItemToObject(awards, award_name, account_info);
+	}
+}
+
+
+static cJSON *generate_awards( uint64_t blockID, time_t start_time ) {
+	// awards!
+	cJSON *awards = cJSON_CreateObject();
+
+	Nonce *nonce = Nonce::get_best_block_nonce( blockID );
+	add_account_award( awards, (char *)"Best Deadline", nonce, start_time );
+
+	nonce = Nonce::get_first_block_nonce( blockID );
+	add_account_award( awards, (char *)"First Miner To Submit", nonce, start_time );
+
+	nonce = Nonce::get_worst_block_nonce( blockID );
+	add_account_award( awards, (char *)"Worst Deadline", nonce, start_time );
+
+	nonce = Nonce::get_last_block_nonce( blockID );
+	add_account_award( awards, (char *)"Last Miner To Submit", nonce, start_time );
+
+
+	Nonce nonces;
+	nonces.blockID( blockID );
+	cJSON_AddNumberToObject(awards, (char *)"Nonces Submitted", nonces.count() );
+
+
+	Share shares;
+	shares.blockID( blockID );
+	cJSON_AddNumberToObject(awards, (char *)"Miners Responded", shares.count() );
+
+
+	return awards;
+}
+
+
+
+void Handlers::webAPI::updates::websocket_alert() {
+	// new block?
+	if ( current_blockID != mining_info_cache.blockID  ) {
+		current_blockID = mining_info_cache.blockID;
+
+		cJSON *root = cJSON_CreateObject();
+		cJSON_AddNumberToObject( root, (char *)"block", mining_info_cache.blockID );
+		cJSON_AddNumberToObject( root, (char *)"newBlockWhen", mining_info_cache.new_block_when );
+		cJSON_AddNumberToObject( root, (char *)"accountsRewardingUs", mining_info_cache.n_potential_miners );
+		cJSON_AddNumberToObject( root, (char *)"difficulty", mining_info_cache.base_target );
+
+		uint64_t prev_blockID = mining_info_cache.blockID - 1;
+
+		cJSON_AddItemToObject(root, (char *)"awards", generate_awards(prev_blockID, mining_info_cache.prev_block_when) );
+
+		char *json = cJSON_Print(root);
+		std::string reply = "BLOCK:" + std::string(json);
+		free(json);
+
+		cJSON_Delete(root);
+
+		WebSocket ws;
+		ws.opcode = WS_TEXT;
+		ws.replace_payload( (const unsigned char *)reply.c_str(), reply.length() );
+
+		send_ws( &ws );
+	}
+
+	// any updates to shares to report?
+	Share *shares = new Share();
+	shares->blockID( mining_info_cache.blockID );
+	shares->order_by( Share::COL_share_fraction, Share::ORDER_BY_DESC );
+	shares->search();
+
+	cJSON *current_array = cJSON_CreateArray();
+
+	while( Share *share = shares->result() ) {
+		cJSON *entry = generate_account_info( share->accountID() );
+		cJSON_AddNumberToObject( entry, (char *)"share", share->share_fraction() * 1000 );
+		cJSON_AddNumberToObject( entry, (char *)"deadline", share->deadline() );
+		cJSON_AddStringToObject( entry, (char *)"deadlineString", share->deadline_string().c_str() );
+
+		// we should be able to estimate reward if we win current block
+		cJSON_AddNumberToObject( entry, (char *)"estimatedReward", share->share_fraction() * Block::reward_per_pie() );
+
+		cJSON_AddItemToArray(current_array, entry);
+
+		delete share;
+	}
+
+	delete shares;
+
+	// ...and again for historic blocks
+
+	shares = Share::historic_shares( mining_info_cache.blockID, HISTORIC_BLOCK_COUNT );
+	shares->search();
+
+	cJSON *historic_array = cJSON_CreateArray();
+
+	while( Share *share = shares->result() ) {
+		cJSON *entry = generate_account_info( share->accountID() );
+		cJSON_AddNumberToObject( entry, (char *)"share", share->share_fraction() * 1000 );
+		cJSON_AddNumberToObject( entry, (char *)"estimatedCapacityTB", Account::estimated_capacity( share->accountID(), mining_info_cache.blockID - HISTORIC_CAPACITY_BLOCK_COUNT, mining_info_cache.base_target ) );
+
+		// we should be able to estimate reward if we win current block
+		cJSON_AddNumberToObject( entry, (char *)"estimatedReward", share->share_fraction() * Block::reward_per_pie() );
+
+		cJSON_AddNumberToObject( entry, (char *)"totalPayouts", Reward::total_paid_by_accountID( share->accountID() ) );
+
+		cJSON_AddItemToArray(historic_array, entry);
+
+		delete share;
+	}
+
+	delete shares;
+
+	cJSON *root = cJSON_CreateObject();
+	cJSON_AddNumberToObject( root, (char *)"block", mining_info_cache.blockID );
+	cJSON_AddItemToObject( root, (char *)"shares", current_array );
+	cJSON_AddItemToObject( root, (char *)"historicShares", historic_array );
+	cJSON_AddItemToObject( root, (char *)"awards", generate_awards(mining_info_cache.blockID, mining_info_cache.new_block_when) );
+
+	char *json = cJSON_Print(root);
+	std::string reply = "SHARES:" + std::string(json);
+	free(json);
+
+	cJSON_Delete(root);
+
+	WebSocket ws;
+	ws.opcode = WS_TEXT;
+	ws.replace_payload( (const unsigned char *)reply.c_str(), reply.length() );
+
+	// CRASHES HERE WITH BAD FILE DESCRIPTOR!! WebSocketHandler.hpp:119
+	// sock: 201388544
+	// in fact entire *this is wrong
+	send_ws(&ws);
+}
+
+
+Handlers::webAPI::updates::updates() {
+	current_blockID = 0;
+}

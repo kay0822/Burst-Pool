@@ -1,0 +1,397 @@
+#include "webAPI/updates.hpp"
+
+#include "WebSocket.hpp"
+#include "remote.hpp"
+#include "server.hpp"
+
+#include "mining-info.hpp"
+
+#include "Share.hpp"
+#include "Block.hpp"
+
+#include "cJSON.hpp"
+
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <map>
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <pthread_np.h>
+
+
+struct websock_info {
+	MHD_socket					sock;
+	uint64_t					current_blockID;
+	bool						is_write_buffer_full;
+	MHD_UpgradeActionCallback	action_callback;
+	void 						*action_cls;
+};
+
+static std::map<MHD_Connection *, struct websock_info *> websockets;
+
+pthread_t websocket_thread;
+pthread_mutex_t websocket_mutex;
+
+
+static void clear_write_full_flag_by_fd( int fd ) {
+	pthread_mutex_lock( &websocket_mutex );
+
+	for( auto it : websockets ) {
+		if ( it.second->sock == fd ) {
+			it.second->is_write_buffer_full = false;
+
+			pthread_mutex_unlock( &websocket_mutex );
+			return;
+		}
+	}
+
+	// not found?
+	std::cerr << "webAPI/updates: can't find fd " << fd << " to clear write buffer full flag!" << std::endl;
+	pthread_mutex_unlock( &websocket_mutex );
+}
+
+
+static void close_websocket_by_fd( int fd ) {
+	pthread_mutex_lock( &websocket_mutex );
+
+	for( auto it : websockets ) {
+		if ( it.second->sock == fd ) {
+			std::cerr << "webAPI/updates: websocket closed: " << it.second->sock << std::endl;
+
+			// call action callback with CLOSE
+			it.second->action_callback(it.second->action_cls, MHD_UPGRADE_ACTION_CLOSE);
+
+			delete it.second;
+			websockets.erase( it.first );
+
+			pthread_mutex_unlock( &websocket_mutex );
+			return;
+		}
+	}
+
+	// not found?
+	std::cerr << "webAPI/updates: can't find fd " << fd << " to close!" << std::endl;
+	pthread_mutex_unlock( &websocket_mutex );
+}
+
+
+void *websocket_updates(void *unused) {
+	IDB::Engine *idb = make_db_connection();
+	IO::Object::set_engine( idb );
+
+	// we do our own poll() here
+	std::cerr << "websocket updates thread: " << pthread_self() << " a-k-a " << pthread_getthreadid_np() << std::endl;
+
+	while(1) {
+		pthread_mutex_lock( &websocket_mutex );
+
+		int nfds = websockets.size();
+		// no websockets? no work!
+		if (nfds == 0) {
+			pthread_mutex_unlock( &websocket_mutex );
+			sleep(1);
+			continue;
+		}
+
+		struct pollfd *pollfds = (struct pollfd *)malloc( nfds * sizeof(struct pollfd) );
+
+		int i = 0;
+		for(auto it : websockets) {
+			pollfds[i].fd = it.second->sock;
+
+			pollfds[i].events = POLLIN;
+			if (it.second->is_write_buffer_full)
+				pollfds[i].events |= POLLOUT;
+
+			pollfds[i].revents = 0;
+
+			i++;
+		}
+
+		pthread_mutex_unlock( &websocket_mutex );
+
+		if ( poll(pollfds, nfds, -1) == -1 ) {
+			if ( errno != EINTR )
+				perror("websocket poll");
+		}
+
+		// anything to read?
+		for(int i=0; i<nfds; i++) {
+			if ( pollfds[i].revents == POLLOUT ) {
+				// we can write() again!
+				clear_write_full_flag_by_fd( pollfds[i].fd );
+			}
+
+			if ( pollfds[i].revents == POLLHUP ) {
+				// closed - remove from map
+				close_websocket_by_fd( pollfds[i].fd );
+				break;
+			} else {
+				// something to read?
+				int n_to_read = 0;
+				if ( ioctl(pollfds[i].fd, FIONREAD, &n_to_read) == -1 ) {
+					perror("Can't get number of bytes to read via ioctl(FIONREAD)");
+					break;
+				}
+
+				uint8_t *buffer = (uint8_t *)malloc(n_to_read);
+				int n_read = read(pollfds[i].fd, buffer, n_to_read);
+				if ( n_read == -1 ) {
+					perror("Can't read from websocket");
+					break;
+				} else if ( n_read != n_to_read ) {
+					perror("Short read from websocket");
+				}
+
+				WebSocket ws;
+
+				if (ws.unpack(buffer, n_read)) {
+					std::cerr << "Received by websocket " << pollfds[i].fd <<
+							": opcode=" << (int)ws.opcode << ", payload[" << (int)ws.payload_len << "]=" << std::string((const char *)ws.payload_data, ws.payload_len) << std::endl;
+				}
+				free(buffer);
+
+				if (ws.opcode == WS_CLOSE) {
+					// websocket closed
+					std::cerr << "webAPI/updates: WebSocket received CLOSE";
+					if (ws.payload_len == 2)
+						std::cerr << ", code: " << (int)ws.close_code;
+					std::cerr << std::endl;
+
+					close_websocket_by_fd( pollfds[i].fd );
+				}
+			}
+		}
+
+		free(pollfds);
+
+		// so, anything to send?
+		pthread_mutex_lock( &websocket_mutex );
+
+		for( auto it : websockets ) {
+			if (!it.second->is_write_buffer_full) {
+				MHD_Connection *connection = it.first;
+				MHD_socket sock = it.second->sock;
+
+				// new block?
+				if ( it.second->current_blockID != mining_info_cache.blockID  ) {
+					it.second->current_blockID = mining_info_cache.blockID;
+
+					cJSON *root = cJSON_CreateObject();
+					cJSON_AddNumberToObject( root, (char *)"block", mining_info_cache.blockID );
+					cJSON_AddNumberToObject( root, (char *)"newBlockWhen", mining_info_cache.new_block_when );
+
+					// awards!
+					cJSON *awards = cJSON_CreateObject();
+					uint64_t prev_blockID = mining_info_cache.blockID - 1;
+
+					Nonce *nonce = Nonce::get_best_block_nonce( prev_blockID );
+					if (nonce) {
+						cJSON *account_info = cJSON_CreateObject();
+						cJSON_AddStringToObject( account_info, (char *)"account", Account::accountID_to_RS_string( nonce->accountID() ).c_str() );
+						cJSON_AddStringToObject( account_info, (char *)"accountId", std::to_string( nonce->accountID() ).c_str() );
+						cJSON_AddNumberToObject( account_info, (char *)"accountId32", nonce->accountID() & 0xFFFFFFFF );
+						delete nonce;
+
+						cJSON_AddItemToObject(awards, (char *)"Best Deadline", account_info);
+					}
+
+					nonce = Nonce::get_first_block_nonce( prev_blockID );
+					if (nonce) {
+						cJSON *account_info = cJSON_CreateObject();
+						cJSON_AddStringToObject( account_info, (char *)"account", Account::accountID_to_RS_string( nonce->accountID() ).c_str() );
+						cJSON_AddStringToObject( account_info, (char *)"accountId", std::to_string( nonce->accountID() ).c_str() );
+						cJSON_AddNumberToObject( account_info, (char *)"accountId32", nonce->accountID() & 0xFFFFFFFF );
+						delete nonce;
+
+						cJSON_AddItemToObject(awards, (char *)"First Miner To Submit", account_info);
+					}
+
+					nonce = Nonce::get_worst_block_nonce( prev_blockID );
+					if (nonce) {
+						cJSON *account_info = cJSON_CreateObject();
+						cJSON_AddStringToObject( account_info, (char *)"account", Account::accountID_to_RS_string( nonce->accountID() ).c_str() );
+						cJSON_AddStringToObject( account_info, (char *)"accountId", std::to_string( nonce->accountID() ).c_str() );
+						cJSON_AddNumberToObject( account_info, (char *)"accountId32", nonce->accountID() & 0xFFFFFFFF );
+						delete nonce;
+
+						cJSON_AddItemToObject(awards, (char *)"Worst Deadline", account_info);
+					}
+
+					nonce = Nonce::get_last_block_nonce( prev_blockID );
+					if (nonce) {
+						cJSON *account_info = cJSON_CreateObject();
+						cJSON_AddStringToObject( account_info, (char *)"account", Account::accountID_to_RS_string( nonce->accountID() ).c_str() );
+						cJSON_AddStringToObject( account_info, (char *)"accountId", std::to_string( nonce->accountID() ).c_str() );
+						cJSON_AddNumberToObject( account_info, (char *)"accountId32", nonce->accountID() & 0xFFFFFFFF );
+						delete nonce;
+
+						cJSON_AddItemToObject(awards, (char *)"Last Miner To Submit", account_info);
+					}
+
+					cJSON_AddItemToObject(root, (char *)"awards", awards);
+
+					char *json = cJSON_Print(root);
+
+					std::string reply = "BLOCK:" + std::string(json);
+					free(json);
+
+					cJSON_Delete(root);
+
+					WebSocket ws;
+					ws.opcode = WS_TEXT;
+					ws.replace_payload( (const unsigned char *)reply.c_str(), reply.length() );
+
+					uint64_t payload_offset = 0;
+
+					// allow 14 bytes for WebSocket data frame header
+					uint64_t buffer_length = reply.length() + 14;
+					uint8_t *buffer = (uint8_t *)malloc( buffer_length );
+
+					if ( ws.pack(buffer, &buffer_length, &payload_offset) ) {
+						// all good
+					} else {
+						// uhoh
+						std::cerr << "ws.pack failed!" << std::endl;
+					}
+
+					uint64_t n_sent = write(sock, buffer, buffer_length);
+					if (n_sent == -1) {
+						if (errno == EAGAIN) {
+							// buffer full - wait for it to clear
+							it.second->is_write_buffer_full = true;
+						} else {
+							perror("Can't send BLOCK WebSocket update");
+							close_websocket_by_fd( pollfds[i].fd );
+						}
+					} else if (n_sent != buffer_length) {
+						perror("Short write to websocket");
+					}
+
+					free(buffer);
+				}
+
+				// any updates to shares to report?
+				Share *shares = Share::shares_from_blockID( mining_info_cache.blockID );
+				shares->order_by( Share::COL_share_permille, Share::ORDER_BY_DESC );
+				shares->search();
+
+				cJSON *current_array = cJSON_CreateArray();
+
+				while( Share *share = shares->result() ) {
+					cJSON *entry = cJSON_CreateObject();
+					cJSON_AddStringToObject( entry, (char *)"account", Account::accountID_to_RS_string( share->accountID() ).c_str() );
+					cJSON_AddStringToObject( entry, (char *)"accountId", std::to_string( share->accountID() ).c_str() );
+					cJSON_AddNumberToObject( entry, (char *)"share", share->share_permille() );
+					cJSON_AddNumberToObject( entry, (char *)"deadline", share->deadline() );
+					cJSON_AddStringToObject( entry, (char *)"deadlineString", share->deadline_string().c_str() );
+					cJSON_AddNumberToObject( entry, (char *)"accountId32", share->accountID() & 0xFFFFFFFF );
+					cJSON_AddItemToArray(current_array, entry);
+
+					delete share;
+				}
+
+				delete shares;
+
+				// ...and again for historic blocks
+
+				shares = Share::shares_from_blockID( mining_info_cache.blockID - HISTORIC_BLOCK_COUNT );
+				shares->historic_average(true);
+				shares->search();
+
+				cJSON *historic_array = cJSON_CreateArray();
+
+				while( Share *share = shares->result() ) {
+					cJSON *entry = cJSON_CreateObject();
+					cJSON_AddStringToObject( entry, (char *)"account", Account::accountID_to_RS_string( share->accountID() ).c_str() );
+					cJSON_AddStringToObject( entry, (char *)"accountId", std::to_string( share->accountID() ).c_str() );
+					cJSON_AddNumberToObject( entry, (char *)"share", share->share_permille() );
+					cJSON_AddNumberToObject( entry, (char *)"accountId32", share->accountID() & 0xFFFFFFFF );
+					cJSON_AddNumberToObject( entry, (char *)"estimatedCapacityTB", Account::estimated_capacity( share->accountID(), mining_info_cache.blockID - HISTORIC_CAPACITY_BLOCK_COUNT, mining_info_cache.base_target ) );
+					cJSON_AddItemToArray(historic_array, entry);
+
+					delete share;
+				}
+
+				delete shares;
+
+				cJSON *root = cJSON_CreateObject();
+				cJSON_AddNumberToObject( root, (char *)"block", mining_info_cache.blockID );
+				cJSON_AddItemToObject( root, (char *)"shares", current_array );
+				cJSON_AddItemToObject( root, (char *)"historicShares", historic_array );
+
+				char *json = cJSON_Print(root);
+
+				std::string reply = "SHARES:" + std::string(json);
+				free(json);
+
+				cJSON_Delete(root);
+
+				WebSocket ws;
+				ws.opcode = WS_TEXT;
+				ws.replace_payload( (const unsigned char *)reply.c_str(), reply.length() );
+
+				uint64_t payload_offset = 0;
+
+				// allow 14 bytes for WebSocket data frame header
+				uint64_t buffer_length = reply.length() + 14;
+				uint8_t *buffer = (uint8_t *)malloc( buffer_length );
+
+				if ( ws.pack(buffer, &buffer_length, &payload_offset) ) {
+					// all good
+				} else {
+					// uhoh
+					std::cerr << "ws.pack failed!" << std::endl;
+				}
+
+				uint64_t n_sent = write(sock, buffer, buffer_length);
+				if (n_sent == -1) {
+					if (errno == EAGAIN) {
+						// buffer full - wait for it to clear
+						it.second->is_write_buffer_full = true;
+					} else {
+						perror("Can't send SHARES WebSocket update");
+						close_websocket_by_fd( pollfds[i].fd );
+					}
+				} else if (n_sent != buffer_length) {
+					perror("Short write to websocket");
+				}
+
+				free(buffer);
+			}
+		}
+
+		pthread_mutex_unlock( &websocket_mutex );
+	}
+}
+
+
+static void updates_websocket( void *cls, struct MHD_Connection *connection, MHD_socket sock, MHD_UpgradeActionCallback action_callback, void *upgrade_action_cls ) {
+	// new websocket!
+	std::cerr << "webAPI/updates: WebSocket opened: " << sock << std::endl;
+
+	pthread_mutex_lock( &websocket_mutex );
+	struct websock_info *info = new struct websock_info;
+	info->sock = sock;
+	info->current_blockID = 0;
+	info->is_write_buffer_full = false;
+	info->action_callback = action_callback;
+	info->action_cls = upgrade_action_cls;
+	websockets[connection] = info;
+	pthread_mutex_unlock( &websocket_mutex );
+
+	// we're done with database connection so release it back to the pool
+	Request *req = (Request *)cls;
+	if (req->db_con) {
+		release_db_connection( req->db_con );
+		req->db_con = NULL;
+	}
+}
+
+
+int Handlers::webAPI::updates::process( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	return resp->upgrade_websocket( req, "updates", updates_websocket );
+}

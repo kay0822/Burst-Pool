@@ -1,0 +1,13 @@
+RegistryHandler::register_handler<API::submitNonce>( "/API/submitNonce" );
+RegistryHandler::register_handler<API::getMiningInfo>( "/API/getMiningInfo" );
+RegistryHandler::register_handler<burst>( "/burst" );
+RegistryHandler::register_handler<webAPI::getBlockDeadlines>( "/webAPI/getBlockDeadlines" );
+RegistryHandler::register_handler<webAPI::updates>( "/webAPI/updates" );
+RegistryHandler::register_handler<webAPI::getMinerInfo>( "/webAPI/getMinerInfo" );
+RegistryHandler::register_handler<webAPI::getCurrentShares>( "/webAPI/getCurrentShares" );
+RegistryHandler::register_handler<webAPI::getRecentBlocks>( "/webAPI/getRecentBlocks" );
+RegistryHandler::register_handler<webAPI::genBlockRewards>( "/webAPI/genBlockRewards" );
+RegistryHandler::register_handler<webAPI::calcBlockShares>( "/webAPI/calcBlockShares" );
+RegistryHandler::register_handler<webAPI::discard>( "/webAPI/discard" );
+RegistryHandler::register_handler<webAPI::cryptoGlance>( "/webAPI/cryptoGlance" );
+RegistryHandler::register_handler<webAPI::pool>( "/webAPI/pool" );

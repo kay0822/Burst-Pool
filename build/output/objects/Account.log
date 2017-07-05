@@ -1,0 +1,73 @@
+--- Diagnosis ---
+
+Table name: Accounts
+Column 'accountID':
+	SQL: bigint unsigned not null unique
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Possible navigator: account() -> Account object
+Column 'first_seen_when':
+	SQL: timestamp not null default current_timestamp
+	C++ data type: time_t
+	mySQL connector type: Timestamp
+	Null-ness: NOT null
+Column 'reward_recipient':
+	SQL: bigint unsigned not null
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Column 'last_updated_when':
+	SQL: timestamp null default null
+	C++ data type: time_t
+	mySQL connector type: Timestamp
+	Null-ness: can be null
+Column 'last_nonce':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'last_nonce_when':
+	SQL: timestamp null default null
+	C++ data type: time_t
+	mySQL connector type: Timestamp
+	Null-ness: can be null
+Column 'account_name':
+	SQL: varchar(255)
+	C++ data type: std::string
+	mySQL connector type: String
+	Null-ness: can be null
+Column 'estimated_capacity':
+	SQL: bigint unsigned
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: can be null
+Column 'account_RS_string':
+	SQL: varchar(255) not null
+	C++ data type: std::string
+	mySQL connector type: String
+	Null-ness: NOT null
+Column 'has_used_this_pool':
+	SQL: boolean not null default false
+	C++ data type: bool
+	mySQL connector type: Boolean
+	Null-ness: NOT null
+Primary keys: accountID
+Search modifier: 'needs_updating' takes bool
+Search modifier: 'sum_capacities' takes bool
+SEARCHPREP method found!
+SEARCHPREP_SUPER class found!
+SEARCHPREP_END found!
+Method: 'save' takes [nothing], returns void 
+Method: 'load_or_create' takes  uint64_t some_accountID , returns STATIC Account *
+Method: 'estimate_capacity' takes [nothing], returns uint64_t 
+Method: 'update_check' takes [nothing], returns void 
+Method: 'accountID_to_RS_string' takes  uint64_t accountID , returns STATIC std::string 
+
+--- Sanity checking ---
+
+Ignoring self-referencial navigator: account() -> Account object (us)
+
+--- Output ---
+
+Key column: accountID

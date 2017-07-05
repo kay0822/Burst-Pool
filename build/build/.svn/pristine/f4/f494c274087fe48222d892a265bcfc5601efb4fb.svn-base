@@ -1,0 +1,60 @@
+OUTPUT_DIR=../output/templates
+LIBS=libTemplates.so libTemplates.a
+LIBS_PATHS=${addprefix ${OUTPUT_DIR}/,${LIBS}}
+TEMPLATES:=${shell find * -type f -name '*.ct' -print}
+TEMPLATE_DIRS:=${shell find * -type d -print}
+TEMPLATE_STEMS:=${TEMPLATES}
+TEMPLATE_STEMS:=${TEMPLATE_STEMS:.ct=}
+TEMPLATE_H_FILES:=${addsuffix .hxx,${TEMPLATE_STEMS}}
+TEMPLATE_OBJS:=${addsuffix .o,${TEMPLATE_STEMS}}
+
+DEV_MODE:=${shell [ -f ../DEV_MODE ] && echo "-DDEV_MODE" }
+CFLAGS?=${if ${DEV_MODE},-O0,-O3}
+
+CFLAGS+=-std=c++11 -pthread -fpic -g
+
+.SUFFIXES:
+.SUFFIXES: .c++ .ct .cxx
+.PATH: ${TEMPLATE_DIRS}
+.SECONDARY: ${addprefix ${OUTPUT_DIR}/,${addsuffix .cxx,${TEMPLATE_STEMS}} ${addsuffix .hxx,${TEMPLATE_STEMS}}}
+
+all: output-dir ${LIBS_PATHS} ${OUTPUT_DIR}/static-templates.cxx ${OUTPUT_DIR}/static-templates.hxx
+	
+clean:
+	@echo '--> Cleaning'
+	@rm -fr ${OUTPUT_DIR}
+
+${OUTPUT_DIR}/static-templates.cxx: ${addprefix ${OUTPUT_DIR}/,${TEMPLATE_H_FILES}}
+	@echo '--> Making a list of templates for static template handler (CXX)'
+	@find * -name '*.ct' -print | perl -n -e ' substr( $$_, -4 ) = ""; my $$c = $$_; $$c =~ s|/|::|g; print qq{\tStaticTemplateHandler::register_template<Templates::$$c>( "/$$_" );\n} ' > $@
+
+${OUTPUT_DIR}/static-templates.hxx: ${addprefix ${OUTPUT_DIR}/,${TEMPLATE_H_FILES}}
+	@echo '--> Making a list of templates for static template handler (HXX)'
+	@find * -name '*.ct' -print | perl -n -e ' substr( $$_, -4 ) = ""; my $$c = $$_; print qq{#include "templates/$$c.hxx"\n} ' > $@
+
+${OUTPUT_DIR}/%.cxx: %.ct
+	@echo '--> Generating code for template $*'
+	@mkdir -p ${OUTPUT_DIR}/${dir $*}
+	@../build/bin/template-to-C++.pl -d ${OUTPUT_DIR} $<
+
+${OUTPUT_DIR}/%.o: ${OUTPUT_DIR}/%.cxx
+	@echo '--> Compiling template $*'
+	@mkdir -p ${OUTPUT_DIR}/${dir $*}
+	${CXX} ${CFLAGS} -c ${DEV_MODE} -o ${OUTPUT_DIR}/$*.o -I. -I${OUTPUT_DIR} -I../build/include -I/usr/local/include -I../objects -I${OUTPUT_DIR}/../objects -I../handlers ${OUTPUT_DIR}/$*.cxx
+
+output-dir:
+	@mkdir -p ${OUTPUT_DIR}
+
+${OUTPUT_DIR}/libTemplates.so: ../build/lib/Template.o ${addprefix ${OUTPUT_DIR}/,${TEMPLATE_OBJS}}
+	@echo 'Building template shared library'
+	@${CXX} ${CFLAGS} -shared -o $@ $^
+
+${OUTPUT_DIR}/libTemplates.a: ../build/lib/Template.o ${addprefix ${OUTPUT_DIR}/,${TEMPLATE_OBJS}}
+	@echo 'Building template static library'
+	@ar -r $@ $^
+
+../build/lib/Template.o:
+	@echo "You haven't made the build environment yet!"
+	@echo "Go to ../build and type 'gmake'"
+	@exit 1
+		

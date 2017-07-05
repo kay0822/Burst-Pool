@@ -1,0 +1,58 @@
+LIBS=Templates Objects IO IDB boost_thread mysqlcppconn microhttpd boost_system curl
+OUTPUT_DIR=../output/handlers
+HANDLERS:=${shell find * -type f -name '*.cpp' ! -name 'base.cpp' -print}
+HANDLER_DIRS:=${shell find * -type d -print}
+HANDLER_STEMS:=${HANDLERS}
+HANDLER_STEMS:=${HANDLER_STEMS:.cpp=}
+HANDLER_HPP_FILES:=${addsuffix .hpp,${HANDLER_STEMS}}
+HANDLER_OBJS:=${addprefix ${OUTPUT_DIR}/,${addsuffix .o,${HANDLER_STEMS}}}
+
+EXTRA_OBJS:=${shell find ../build/lib -type f -name '*.o' -print}
+
+INCLUDE_DIRS+=-I/usr/include -I/usr/local/include -I../build/include -I. -I${OUTPUT_DIR} -I../objects -I${OUTPUT_DIR}/../objects -I../templates -I${OUTPUT_DIR}/..
+LIB_DIRS+=-L${OUTPUT_DIR}/../objects -L../build/lib -L/usr/local/lib
+
+.SUFFIXES:
+.SUFFIXES: .cpp .cxx .hxx
+.SECONDARY: ${HANDLER_HXX_FILES}
+.PATH: ${HANDLER_DIRS}
+
+DEV_MODE:=${shell [ -f ../DEV_MODE ] && echo "-DDEV_MODE" }
+CFLAGS?=${if ${DEV_MODE},-O0,-O3}
+
+CFLAGS+=-std=c++11 -pthread -fpic -g
+
+
+all: output-dir ${OUTPUT_DIR}/server
+
+startup:
+	export LD_LIBRARY_PATH="../build/lib:${OUTPUT_DIR}/../templates:${OUTPUT_DIR}/../objects:/usr/local/lib:/usr/lib"; \
+	${VALGRIND} ${OUTPUT_DIR}/server
+
+clean:
+	@echo '--> Cleaning'
+	@rm -fr ${OUTPUT_DIR}
+	
+output-dir:
+	@mkdir -p ${OUTPUT_DIR}
+
+${OUTPUT_DIR}/server.o: config.hpp ${OUTPUT_DIR}/handlers.hxx ../build/src/server.cpp
+	@echo '--> Compiling server'
+	${CXX} ${CFLAGS} ${DEV_MODE} ${INCLUDE_DIRS} -o $@ -c ../build/src/server.cpp
+
+${OUTPUT_DIR}/server: ${HANDLER_OBJS} ${OUTPUT_DIR}/server.o ${EXTRA_OBJS}
+	@echo '--> Linking server'
+	${CXX} ${CFLAGS} -L${OUTPUT_DIR}/../templates ${LIB_DIRS} -o $@ $^ ${addprefix -l,${LIBS}}
+
+${OUTPUT_DIR}/handlers.hxx:
+	@echo '--> Generating code for all handlers'
+	@../build/bin/handlers-hxx.pl ${HANDLER_HPP_FILES} > $@
+
+${OUTPUT_DIR}/%-inside.hxx: %.cpp
+	@mkdir -p ${dir $@}
+	@echo '--> Generating code for handler $*'
+	@../build/bin/handler-to-hxx.pl -d ${OUTPUT_DIR} $*.cpp
+
+${OUTPUT_DIR}/%.o: ${OUTPUT_DIR}/%-inside.hxx %.cpp
+	@echo '--> Compiling handler $*'
+	${CXX} ${CFLAGS} ${DEV_MODE} ${INCLUDE_DIRS} -o ${OUTPUT_DIR}/$*.o -c $*.cpp

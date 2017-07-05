@@ -1,0 +1,40 @@
+// generated hpp
+
+#ifndef __HANDLER__webAPI__updates
+#define __HANDLER__webAPI__updates
+
+#include "Handler.hpp"
+#include "config.hpp"
+#include "WebSocketHandler.hpp"
+
+#include "Block.hpp"
+
+
+namespace Handlers {
+
+	namespace webAPI {
+
+		class updates: public WebSocketHandler<updates> {
+			private:
+				bool need_initial_info;
+
+				static Block *current_block;
+				static time_t started_when;
+
+				static bool send_block_json;
+				static std::string block_json;
+				static std::string shares_json;
+
+			public:
+				virtual void websocket_alert();
+				updates();
+				static void init();
+
+		};
+
+	} // webAPI namespace
+
+} // Handlers namespace
+
+
+#endif

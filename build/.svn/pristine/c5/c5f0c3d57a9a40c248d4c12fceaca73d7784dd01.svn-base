@@ -1,0 +1,158 @@
+/*
+		Create table Blocks (
+			blockID						bigint unsigned not null unique,
+			first_seen_when				timestamp not null default current_timestamp,
+			best_nonce_account_id		bigint unsigned,
+			generator_account_id		bigint unsigned,
+			block_reward				bigint unsigned,
+			is_our_block				boolean not null default false,
+			has_been_shared				boolean not null default false,
+			base_target					bigint unsigned,
+			primary key					(blockID),
+			index						(is_our_block, has_been_shared)
+		);
+*/
+
+#include "Nonce.hpp"
+#include "Share.hpp"
+#include "Reward.hpp"
+
+#include "Block.cxx"
+
+#include "mining-info.hpp"
+
+#include <math.h>
+
+SEARCHMOD( before_blockID, uint64_t );
+
+CHILD_OBJECTS(Nonce, block_nonces);
+CHILD_OBJECTS(Share, block_shares);
+CHILD_OBJECTS(Reward, block_rewards);
+
+
+
+SEARCHPREP {
+	SEARCHPREP_SUPER;
+
+	if ( SEARCHMOD_IS_SET(before_blockID) ) {
+		IDB::Where *new_clause = new IDB::sqlLtUInt64( "blockID", SEARCHMOD_VALUE(before_blockID) );
+		SEARCHPREP_ADD( new_clause );
+	}
+
+	SEARCHPREP_END;
+}
+
+
+
+STATIC Nonce *Block::find_best_nonce( uint64_t blockID ) {
+	Nonce *nonces = new Nonce();
+	nonces->blockID( blockID );
+	nonces->order_by( Nonce::COL_deadline, ORDER_BY_DESC );
+
+	return nonces->present();
+}
+
+
+STATIC void Block::recalculate_shares( uint64_t blockID ) {
+	IO::Object::start_transaction();
+
+	Block *block = Block::load( blockID );
+	if (block == NULL) {
+		block = new Block();
+		block->blockID( blockID );
+	}
+
+	Nonce nonces;
+	nonces.blockID(blockID);
+	nonces.is_accounts_best_deadline(true);
+	nonces.order_by( Nonce::COL_deadline, ORDER_BY_DESC );
+	nonces.search();
+
+	uint64_t total_deadlines = 0;
+	std::vector<uint64_t> deadlines;
+	std::vector<Nonce *> nonces_to_share;
+
+	while( Nonce *nonce = nonces.result() ) {
+		total_deadlines += nonce->deadline();
+		deadlines.push_back( nonce->deadline() );
+		nonces_to_share.push_back( nonce );
+
+		// save best deadline into Block info
+		block->best_nonce_account_id( nonce->accountID() );
+	}
+
+	// done with Block
+	block->save();
+	delete block;
+
+	std::vector<uint64_t> shares;
+	uint64_t total_shares = 0;
+
+	for( uint64_t deadline : deadlines ) {
+		uint64_t share = total_deadlines * 1000 / deadline;
+		shares.push_back( share );
+		total_shares += share;
+	}
+
+	// wipe old shares
+	Share old_shares;
+	old_shares.blockID(blockID);
+	old_shares.search_and_destroy();
+
+	for(int i=0; i<nonces_to_share.size(); i++) {
+		Nonce *nonce = nonces_to_share[i];
+		uint64_t permille = shares[i] * 1000 / total_shares;
+
+		Share share;
+		share.blockID(blockID);
+		share.accountID( nonce->accountID() );
+		share.share_permille( permille );
+		share.deadline( nonce->deadline() );
+		share.deadline_string( nonce->deadline_string() );
+		share.save();
+
+		delete nonce;
+	}
+
+	IO::Object::commit();
+}
+
+
+void Block::reward_miners() {
+	IO::Object::start_transaction();
+
+	refresh();
+
+	if ( is_our_block() && !has_been_shared() ) {
+		uint64_t reward_to_share = block_reward() * 100000000;
+		// remove fees, etc. from potential reward to be shared
+		uint64_t pool_fee = reward_to_share * POOL_FEE;
+		reward_to_share -= pool_fee;
+		// treat pool fee as just another reward?
+		Reward reward;
+		reward.blockID( blockID() );
+		reward.accountID( POOL_FEE_ACCOUNTID );
+		reward.amount( pool_fee );
+		reward.save();
+
+		Share *shares = block_shares();
+		shares->search();
+
+		while( Share *share = shares->result() ) {
+			Reward reward;
+			reward.blockID( share->blockID() );
+			reward.accountID( share->accountID() );
+			reward.amount( reward_to_share * share->share_permille() / 1000 );
+			reward.save();
+
+			delete share;
+		}
+
+		delete shares;
+
+		has_been_shared(true);
+		save();
+	}
+
+	IO::Object::commit();
+}

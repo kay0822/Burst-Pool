@@ -1,0 +1,11 @@
+databases/mysql55-client
+lang/perl5.16
+databases/mysql55-client
+lang/perl5.16
+databases/p5-DBI
+print/indexinfo
+security/libressl
+security/libgcrypt
+security/gnutls
+devel/boost-libs
+databases/mysql55-client

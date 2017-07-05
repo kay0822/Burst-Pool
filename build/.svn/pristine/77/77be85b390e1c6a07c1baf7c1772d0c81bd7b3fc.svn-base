@@ -1,0 +1,180 @@
+#include "webAPI/updates.hpp"
+
+#include "WebSocket.hpp"
+#include "remote.hpp"
+
+#include "mining-info.hpp"
+
+#include "Share.hpp"
+#include "Block.hpp"
+
+#include "cJSON.hpp"
+
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <map>
+
+
+std::map<MHD_Connection *, uint64_t> websocket_current_blockID;
+
+
+static enum MHD_UpgradeEventMask updates_websocket( void *cls, struct MHD_Connection *connection, void **con_cls, size_t *data_in_size, const char *data_in, size_t *data_out_size, char *data_out ) {
+	// don't forget to free cls when you're done!
+	std::string *ws_key = (std::string *)cls;
+	std::cerr << "updates_websocket call!" << std::endl;
+
+
+	if (data_out == NULL) {
+		// websocket closed
+		std::cerr << "updates websocket closed" << std::endl;
+		delete ws_key;
+
+		websockets.erase( connection );
+
+	} else if (data_in == NULL) {
+		// websocket opened
+		std::cerr << "updates websocket opened" << std::endl;
+
+		websockets[connection] = updates_websocket;
+		websocket_current_blockID[connection] = 0;
+
+		// no initial output
+		*data_out_size = 0;
+	} else if (*data_in_size) {
+		// incoming data
+		WebSocket ws;
+
+		if (ws.unpack(data_in, *data_in_size)) {
+			std::cerr << "Received by websocket: opcode=" << (int)ws.opcode << ", payload[" << (int)ws.payload_len << "]=" << std::string(ws.payload_data, ws.payload_len) << std::endl;
+
+			// instant update?
+			if ( std::string(ws.payload_data, ws.payload_len) == "Update!" ) {
+				std::cerr << "Requested instant update!" << std::endl;
+				*data_out_size = 0;
+				return MHD_UPGRADE_EVENT_WRITE;
+			}
+		}
+
+		if (ws.opcode == WS_CLOSE) {
+			// websocket closed
+			std::cerr << "updates websocket received CLOSE" << std::endl;
+			if (ws.payload_len == 2)
+				std::cerr << "CLOSE code: " << (int)ws.close_code << std::endl;
+
+			*data_out_size = 0;
+			return MHD_UPGRADE_EVENT_TERMINATE;
+		}
+
+		// nothing to send
+		*data_out_size = 0;
+	} else {
+		// new block?
+		if (websocket_current_blockID[connection] != mining_info_cache.blockID) {
+			websocket_current_blockID[connection] = mining_info_cache.blockID;
+			std::string reply = "BLOCK:" + std::to_string(mining_info_cache.blockID);
+
+			WebSocket ws;
+
+			ws.opcode = WS_TEXT;
+			ws.replace_payload( reply.c_str(), reply.length() );
+
+			uint64_t payload_offset = 0;
+
+			if ( ws.pack(data_out, data_out_size, &payload_offset) ) {
+				// all good
+			} else {
+				// uhoh
+				std::cerr << "ws.pack failed!" << std::endl;
+				*data_out_size = 0;
+			}
+
+			// loop again
+			return MHD_UPGRADE_EVENT_WRITE;
+		}
+
+		// any new payments to report?
+		std::cerr << "updates websocket checking for new shares" << std::endl;
+
+		Share *shares = Share::shares_from_blockID( mining_info_cache.blockID );
+
+		cJSON *current_array = cJSON_CreateArray();
+
+		while( Share *share = shares->result() ) {
+			cJSON *entry = cJSON_CreateObject();
+			cJSON_AddStringToObject( entry, (char *)"account", Account::accountID_to_RS_string( share->accountID() ).c_str() );
+			cJSON_AddNumberToObject( entry, (char *)"accountId", share->accountID() );
+			cJSON_AddNumberToObject( entry, (char *)"share", share->share_permille() );
+			cJSON_AddNumberToObject( entry, (char *)"deadline", share->deadline() );
+			cJSON_AddStringToObject( entry, (char *)"deadlineString", share->deadline_string().c_str() );
+			cJSON_AddNumberToObject( entry, (char *)"accountId32", share->accountID() & 0xFFFFFFFF );
+			cJSON_AddItemToArray(current_array, entry);
+
+			delete share;
+		}
+
+		delete shares;
+
+		// ...and again for historic blocks
+
+		shares = Share::shares_from_blockID( mining_info_cache.blockID - HISTORIC_BLOCK_COUNT );
+
+		cJSON *historic_array = cJSON_CreateArray();
+
+		while( Share *share = shares->result() ) {
+			cJSON *entry = cJSON_CreateObject();
+			cJSON_AddStringToObject( entry, (char *)"account", Account::accountID_to_RS_string( share->accountID() ).c_str() );
+			cJSON_AddNumberToObject( entry, (char *)"accountId", share->accountID() );
+			cJSON_AddNumberToObject( entry, (char *)"share", share->share_permille() );
+			cJSON_AddNumberToObject( entry, (char *)"deadline", share->deadline() );
+			cJSON_AddStringToObject( entry, (char *)"deadlineString", share->deadline_string().c_str() );
+			cJSON_AddNumberToObject( entry, (char *)"accountId32", share->accountID() & 0xFFFFFFFF );
+			cJSON_AddItemToArray(historic_array, entry);
+
+			delete share;
+		}
+
+		delete shares;
+
+		cJSON *root = cJSON_CreateObject();
+		cJSON_AddNumberToObject( root, (char *)"block", mining_info_cache.blockID );
+		cJSON_AddItemToObject( root, (char *)"shares", current_array );
+		cJSON_AddItemToObject( root, (char *)"historicShares", historic_array );
+
+
+		char *json = cJSON_Print(root);
+
+		std::string reply = "SHARES:" + std::string(json);
+		free(json);
+
+		cJSON_Delete(root);
+
+		WebSocket ws;
+
+		ws.opcode = WS_TEXT;
+		ws.replace_payload( reply.c_str(), reply.length() );
+
+		uint64_t payload_offset = 0;
+
+		std::cerr << "data_out_size: " << *data_out_size << " and we need " << reply.length() << std::endl;
+
+		if ( ws.pack(data_out, data_out_size, &payload_offset) ) {
+			// all good
+			std::cerr << "ws.pack ok!" << std::endl;
+			std::cerr << "data_out_size now " << *data_out_size << std::endl;
+		} else {
+			// uhoh
+			std::cerr << "ws.pack failed!" << std::endl;
+			*data_out_size = 0;
+		}
+	}
+
+	return MHD_UPGRADE_EVENT_READ;
+}
+
+
+int Handlers::webAPI::updates::process( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	return resp->upgrade_websocket( req, "updates", updates_websocket );
+}

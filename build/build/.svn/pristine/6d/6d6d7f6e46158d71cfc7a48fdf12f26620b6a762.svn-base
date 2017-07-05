@@ -1,0 +1,71 @@
+LIBS=Templates Objects IO IDB boost_thread mysqlcppconn microhttpd boost_system curl
+
+OUTPUT_DIR=../output/handlers
+SOLIB=libHandlers.so
+ALIB=libHandlers.a
+
+SRCS:=${shell find * -type f -name '*.cpp' -print}
+INCS:=${addprefix ${OUTPUT_DIR}/,${SRCS:.cpp=-inside.hxx}}
+OBJS:=${addprefix ${OUTPUT_DIR}/,${SRCS:.cpp=.o}}
+HPPS:=${SRCS:.cpp=.hpp}
+
+.SUFFIXES:
+.SUFFIXES: .cpp .hpp .hxx .cxx .d
+.PATH: ${OBJECT_DIRS}
+
+DEV_MODE:=${shell [ -f ../DEV_MODE ] && echo "-DDEV_MODE" }
+CXXFLAGS?=${if ${DEV_MODE},-O0 -DDEV_MODE,-O3}
+CXXFLAGS+=-std=c++11 -pthread -fpic -g -DMINIMAL_SAVE
+CPPFLAGS=-I. -I../output -I../handlers -I../templates -I../objects -I../output/objects -I../output/handlers -I../build/include -I/usr/local/include -I../src
+
+LDFLAGS=-shared -fpic -Wl,-soname,${SOLIB}
+
+all: output-dir ${INCS} ${OUTPUT_DIR}/../${SOLIB} ${OUTPUT_DIR}/../${ALIB} ${OUTPUT_DIR}/handlers.hxx ${OUTPUT_DIR}/handlers.cxx
+
+clean:
+	@echo '--> Cleaning'
+	@rm -fr ${OUTPUT_DIR} ${OUTPUT_DIR}/../${SOLIB}  ${OUTPUT_DIR}/../${ALIB}
+
+${OUTPUT_DIR}/Makefile: ${SRCS}
+	@echo '--> Generating dependency makefile'
+	@${CXX} -MM -MT ${OUTPUT_DIR}/$*.o ${CPPFLAGS} $^ \
+		| perl -p -e 's|\s../build\S+| |g; s|\s/\S+| |g; s|^\s*\\\s*$$||go; $$_' \
+		> $@
+
+${OUTPUT_DIR}/%-inside.hxx: %.cpp
+	@echo '--> Generating code for handler $*'
+	@mkdir -p ${OUTPUT_DIR}/${dir $*}
+	@../build/bin/handler-to-hxx.pl -d ${OUTPUT_DIR} $*.cpp
+
+${OUTPUT_DIR}/%.o: ${OUTPUT_DIR}/%-inside.hxx %.cpp 
+	@echo '--> Compiling object $*' 
+	@mkdir -p ${OUTPUT_DIR}/${dir $*}
+	${CXX} ${CXXFLAGS} ${CPPFLAGS} -c -o $@ $*.cpp
+
+output-dir:
+	@mkdir -p ${OUTPUT_DIR}
+
+${OUTPUT_DIR}/../${SOLIB}: ${OUTPUT_DIR}/Makefile
+	@echo '--> Building object files'
+	${MAKE} -f ${OUTPUT_DIR}/Makefile -f Makefile ${OBJS}
+	@echo '--> Building object shared library'
+	${CXX} ${CXXFLAGS} ${LDFLAGS} -o $@ ${OBJS}
+
+${OUTPUT_DIR}/../${ALIB}: ${OUTPUT_DIR}/Makefile
+	@echo '--> Building object files'
+	${MAKE} -f ${OUTPUT_DIR}/Makefile -f Makefile ${OBJS}
+	@echo '--> Building object static library'
+	ar -r $@ ${OBJS}
+
+${OUTPUT_DIR}/handlers.hxx:
+	@echo '--> Generating code for all handlers'
+	@../build/bin/handlers-hxx.pl ${HPPS} > $@
+
+${OUTPUT_DIR}/handlers.cxx: ${SRCS}
+	@echo '--> Making list of handlers'
+	@rm -f $@
+	@for handler_path in ${SRCS:.cpp=}; do \
+		handler=`echo $$handler_path | sed 's/\//::/g'`; \
+		printf 'RegistryHandler::register_handler<%s>( "/%s" );\n' $$handler $$handler_path >> $@; \
+	done 
+	

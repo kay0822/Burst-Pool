@@ -1,0 +1,6 @@
+#include <string>
+
+class extra_stuff {
+	public:
+		std::string ws_key;
+};

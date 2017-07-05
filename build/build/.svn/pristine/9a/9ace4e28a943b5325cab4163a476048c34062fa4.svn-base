@@ -1,0 +1,115 @@
+// boring mysql stuff
+#include "mysql_connection.h"
+#include "mysql/mysql.h"
+#include <cppconn/driver.h>
+#include <cppconn/resultset.h>
+
+// object and database stuff
+#include "IDB/IDB.h"
+#include "IO/Object.h"
+
+#include "Pool.hpp"
+
+#include "database.hpp"
+#include "ftime.hpp"
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+
+Pool<IDB::Engine *> DB_connections;
+sql::Driver *driver = NULL;
+
+
+IDB::Engine *make_db_connection() {
+	sql::Connection *con = driver->connect(DB_URI, DB_USER, DB_PASSWORD);
+	if (con == NULL) {
+		std::cerr << "Can't connect to database" << std::endl;
+		return NULL;
+	}
+
+	con->setSchema( DB_SCHEMA );
+	bool opt_reconnect = true;
+	con->setClientOption("OPT_RECONNECT", &opt_reconnect);
+
+	IDB::Engine *idb = new IDB::Engine(con);
+	idb->execute("SET NAMES utf8");
+	IO::Object::set_engine( idb );
+
+	return idb;	
+}
+
+
+IDB::Engine *request_db_connection() {
+	mysql_thread_init();
+
+	IDB::Engine *idb = DB_connections.request();
+
+	if ( idb->connection()->isClosed() ) {
+		// this one is buggered - make a new one
+		std::cout << ftime() << " DB pool contained a stale database handle!" << std::endl;
+		delete idb;
+
+		idb = make_db_connection();
+	}
+
+	IO::Object::set_engine( idb );
+	return idb;
+}
+
+void release_db_connection(IDB::Engine *idb) {
+	DB_connections.release(idb);
+
+	mysql_thread_end();
+}
+
+
+void database_init() {
+	std::cout << "Waiting for mySQL socket..." << std::flush;
+	int sock_access;
+	for(int i=0; i<20; i++) {
+		sock_access = access("/tmp/mysql.sock", R_OK);
+		if (!sock_access)
+			break;
+
+		sleep(3);
+		std::cout << " " << i << std::flush;
+	}
+	if (sock_access == -1) {
+		std::cout << " ...giving up!" << std::endl;
+		exit(2);
+	}
+	std::cout << std::endl;
+
+	std::cout << "Connecting to mySQL..." << std::endl;
+
+	// mySQL connections
+	mysql_library_init(0, NULL, NULL);
+	driver = get_driver_instance();
+
+	try {
+		for(int i=0; i < DB_POOL_SIZE; i++) {
+			DB_connections.add( make_db_connection() );
+		}
+	} catch (...) {
+		std::cout << "mySQL connecting failed" << std::endl;
+		exit(2);
+	}
+	std::cout << "mySQL connections: " << DB_POOL_SIZE << std::endl;
+}
+
+
+void database_shutdown() {
+	// release DB pool
+	std::cout << "Disconnecting from mySQL..." << std::endl;
+	while(! DB_connections.empty() ) {
+		IDB::Engine *idb = DB_connections.request();
+		delete idb;
+	}
+
+	mysql_thread_end();
+
+	mysql_library_end();
+}

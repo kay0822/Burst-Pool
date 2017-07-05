@@ -1,0 +1,46 @@
+/*
+		Create table Shares (
+			blockID						bigint unsigned not null,
+			accountID					bigint unsigned not null,
+			share_permille				bigint unsigned not null,
+			deadline					bigint unsigned not null,
+			deadline_string				varchar(255) not null,
+			primary key					(blockID, accountID),
+			index						(blockID, share_permille)
+		);
+*/
+
+#include "Share.cxx"
+
+SEARCHMOD( from_blockID, uint64_t );
+
+
+SEARCHPREP {
+	SEARCHPREP_SUPER;
+
+	if ( SEARCHMOD_IS_SET(from_blockID) ) {
+		IDB::Where *new_clause = new IDB::sqlGeUInt64( "blockID", SEARCHMOD_VALUE(from_blockID) );
+		SEARCHPREP_ADD( new_clause );
+		ps->options->order_by = "share_permille DESC";
+		ps->options->group_by = "accountID";
+		// replace cols with our own version
+		ps->cols->clear();
+		// this needs to have the same order and number of columns:
+		ps->cols->push_back( "blockID" );
+		ps->cols->push_back( "accountID" );
+		ps->cols->push_back( "sum(share_permille)/((select max(blockID) from Shares) - " + std::to_string( SEARCHMOD_VALUE(from_blockID) ) + " + 1) as share_permille" );
+		ps->cols->push_back( "deadline" );
+		ps->cols->push_back( "deadline_string" );
+	}
+
+	SEARCHPREP_END;
+}
+
+
+
+STATIC Share *Share::shares_from_blockID( uint64_t blockID ) {
+	Share *shares = new Share();
+	shares->from_blockID( blockID );
+	shares->search();
+	return shares;
+}

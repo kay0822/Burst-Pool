@@ -1,0 +1,43 @@
+// generated hpp
+
+#ifndef __HANDLER__webAPI__updates
+#define __HANDLER__webAPI__updates
+
+#include "Handler.hpp"
+#include "config.hpp"
+
+
+	namespace Handlers {
+
+	namespace webAPI {
+
+
+#ifdef HANDLER_SUPERCLASS
+class updates: public HANDLER_SUPERCLASS {
+#else
+class updates: public Handler {
+#endif
+
+
+	// custom stuff goes here!
+
+
+	public:
+		#include "webAPI/updates-inside.hxx"
+
+};
+
+
+
+	} // webAPI namespace
+
+	} // Handlers namespace
+
+
+extern pthread_t websocket_thread;
+extern pthread_mutex_t websocket_mutex;
+
+void *websocket_updates(void *unused);
+
+
+#endif

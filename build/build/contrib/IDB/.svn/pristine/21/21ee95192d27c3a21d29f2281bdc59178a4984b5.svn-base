@@ -1,0 +1,19 @@
+#include "sqlIDB_OPUInt64.h"
+#include "opIDB_OP.h"
+#include <cppconn/prepared_statement.h>
+
+namespace IDB { 
+	std::string sqlIDB_OPUInt64::toString() {
+		std::string			output;
+
+		output = col + IDB_SQL_OP + "?";
+
+		return output;
+	}
+
+	unsigned int sqlIDB_OPUInt64::bind(sql::PreparedStatement *pstmt, unsigned int bind_offset) {
+		pstmt->setUInt64(bind_offset++, value);
+
+		return bind_offset;
+	}
+}

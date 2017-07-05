@@ -1,0 +1,132 @@
+/*
+		Create table Rewards (
+			blockID						bigint unsigned not null,
+			accountID					bigint unsigned not null,
+			amount						bigint unsigned not null,
+			is_paid						boolean not null default false,
+			tx_id						bigint unsigned,
+			is_confirmed				boolean not null default false,
+			paid_at_block_id			bigint unsigned,
+			primary key					(blockID, accountID),
+			index						(is_paid, accountID, blockID),
+			index						(is_confirmed, accountID, blockID)
+		);
+*/
+
+#include "Reward.cxx"
+
+SEARCHMOD( before_blockID, uint64_t );
+SEARCHMOD( below_amount, uint64_t );
+SEARCHMOD( paid_before_block_id, uint64_t );
+SEARCHMOD( sum_amount, bool );
+
+
+SEARCHPREP {
+	SEARCHPREP_SUPER;
+
+	if ( SEARCHMOD_IS_SET(before_blockID) ) {
+		IDB::Where *new_clause = new IDB::sqlLtUInt64( "blockID", SEARCHMOD_VALUE(before_blockID) );
+		SEARCHPREP_ADD(new_clause);
+	}
+
+	if ( SEARCHMOD_IS_SET(below_amount) ) {
+		IDB::Where *new_clause = new IDB::sqlLtUInt64( "amount", SEARCHMOD_VALUE(below_amount) );
+		SEARCHPREP_ADD(new_clause);
+	}
+
+	if ( SEARCHMOD_IS_SET(paid_before_block_id) ) {
+		IDB::Where *new_clause = new IDB::sqlLtUInt64( "paid_at_block_id", SEARCHMOD_VALUE(paid_before_block_id) );
+		SEARCHPREP_ADD(new_clause);
+	}
+
+	if ( SEARCHMOD_IS_SET(sum_amount) ) {
+		ps->cols->clear();
+		ps->cols->push_back("blockID");
+		ps->cols->push_back("accountID");
+
+		ps->cols->push_back("sum(amount)");
+
+		ps->cols->push_back("null");
+		ps->cols->push_back("null");
+		ps->cols->push_back("null");
+		ps->cols->push_back("null");
+	}
+
+	SEARCHPREP_END;
+}
+
+
+STATIC uint64_t Reward::total_unpaid() {
+	Reward rewards;
+	rewards.is_paid(false);
+	rewards.sum_amount(true);
+
+	std::unique_ptr<Reward> reward_total( rewards.present() );
+
+	if (reward_total)
+		return reward_total->amount();
+	else
+		return 0;
+}
+
+
+STATIC uint64_t Reward::total_paid_by_accountID( uint64_t accountID ) {
+	Reward rewards;
+	rewards.is_paid(true);
+	rewards.accountID(accountID);
+	rewards.sum_amount(true);
+
+	std::unique_ptr<Reward> reward_total( rewards.present() );
+
+	if (reward_total)
+		return reward_total->amount();
+	else
+		return 0;
+}
+
+
+STATIC uint64_t Reward::total_unpaid_by_accountID( uint64_t accountID ) {
+	Reward rewards;
+	rewards.is_paid(false);
+	rewards.accountID(accountID);
+	rewards.sum_amount(true);
+
+	std::unique_ptr<Reward> reward_total( rewards.present() );
+
+	if (reward_total)
+		return reward_total->amount();
+	else
+		return 0;
+}
+
+
+STATIC uint64_t Reward::total_deferred_by_accountID( uint64_t accountID, uint64_t threshold ) {
+	Reward rewards;
+	rewards.is_paid(false);
+	rewards.accountID(accountID);
+	rewards.below_amount( threshold );
+	rewards.sum_amount(true);
+
+	std::unique_ptr<Reward> reward_total( rewards.present() );
+
+	if (reward_total)
+		return reward_total->amount();
+	else
+		return 0;
+}
+
+
+STATIC uint64_t Reward::total_unconfirmed_by_accountID( uint64_t accountID ) {
+	Reward rewards;
+	rewards.is_paid(true);
+	rewards.is_confirmed(false);
+	rewards.accountID(accountID);
+	rewards.sum_amount(true);
+
+	std::unique_ptr<Reward> reward_total( rewards.present() );
+
+	if (reward_total)
+		return reward_total->amount();
+	else
+		return 0;
+}

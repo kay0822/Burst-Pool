@@ -1,0 +1,47 @@
+OUTPUT_DIR=../output/src
+
+SRCS:=${shell find * -type f -name '*.cpp' -print}
+OBJS:=${addprefix ${OUTPUT_DIR}/,${SRCS:.cpp=.o}}
+
+.SUFFIXES:
+.SUFFIXES: .cpp .hpp .hxx .cxx .d
+.PATH: ${OBJECT_DIRS}
+
+DEV_MODE:=${shell [ -f ../DEV_MODE ] && echo "-DDEV_MODE" }
+CXXFLAGS?=${if ${DEV_MODE},-O0,-O3}
+CXXFLAGS+=-std=c++11 -pthread -fpic -g -DMINIMAL_SAVE ${if ${DEV_MODE},-DDEV_MODE,}
+
+CPPFLAGS=-I. -I../output/objects -I../output -I../objects -I../handlers -I../templates -I../output/handlers -I../build/include -I/usr/local/include
+
+
+LIBS+=gnutls crypto gcrypt md
+LIBS+=boost_regex boost_iostreams boost_system boost_thread
+LIBS+=Handlers Templates Objects SHMTech IO IDB mysqlcppconn curl microhttpd 
+
+LDFLAGS=-fpic -L/usr/local/lib -L../output -L../build/lib
+
+all: output-dir ${OUTPUT_DIR}/../server
+
+clean:
+	@echo '--> Cleaning'
+	@rm -fr ${OUTPUT_DIR} ${OUTPUT_DIR}/server
+
+${OUTPUT_DIR}/Makefile: ${SRCS}
+	@echo '--> Generating dependency makefile'
+	@${CXX} -MM -MT ${OUTPUT_DIR}/$*.o ${CPPFLAGS} $^ \
+		| perl -p -e 's|\s../build\S+| |g; s|\s/\S+| |g; s|^\s*\\\s*$$||go; $$_' \
+		> $@
+
+${OUTPUT_DIR}/%.o: %.cpp 
+	@echo '--> Compiling $^' 
+	@mkdir -p ${OUTPUT_DIR}/${dir $*}
+	${CXX} ${CXXFLAGS} ${CPPFLAGS} -c -o $@ $^
+
+output-dir:
+	@mkdir -p ${OUTPUT_DIR}
+
+${OUTPUT_DIR}/../server: ${OUTPUT_DIR}/Makefile
+	@echo '--> Building object files'
+	${MAKE} -f ${OUTPUT_DIR}/Makefile -f Makefile ${OBJS}
+	@echo '--> Building server'
+	${CXX} ${CXXFLAGS} ${LDFLAGS} -o $@ ${OBJS} ${addprefix -l,${LIBS}}

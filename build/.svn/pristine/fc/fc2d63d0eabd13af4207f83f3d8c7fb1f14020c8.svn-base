@@ -1,0 +1,460 @@
+var shares = [];
+var historicShares = [];
+var currentBlockStart;
+
+
+function deadlineToString(d) {
+	var units = [ 'year', 'month', 'day', 'hour', 'min', 'sec'];
+	
+	if (d < 2) {
+		return d + " " + units[units.length - 1];
+	}
+	
+	var unit_multipliers = [ 365*24*60*60, 30*24*60*60, 24*60*60, 60*60, 60, 1 ];
+	var ds = '';
+	for(var i=0; i<units.length; i++) {
+		if (d > unit_multipliers[i]) {
+			var n_units = Math.floor( d / unit_multipliers[i] );
+			d = d % unit_multipliers[i];
+			if (ds.length > 0) {
+				ds += ', ';
+			}
+			ds += n_units + " " + units[i];
+			if (n_units > 1) {
+				ds += 's';
+			}
+		}
+	}
+	
+	return ds;
+}
+
+
+// expecting args in range 0 to 1
+function HSVtoRGB(hue, sat, val) {
+	var var_r;
+	var var_g;
+	var var_b;
+
+	if (sat == 0) {
+		var_r = val;
+		var_g = val;
+		var_b = val;
+	} else {
+		var var_h = hue * 6;
+		var var_i = Math.floor( var_h );
+		var var_1 = val * (1 - sat);
+		var var_2 = val * (1 - sat * (var_h - var_i));
+		var var_3 = val * (1 - sat * (1 - (var_h - var_i)));
+		if (var_i==0)      {var_r=val;    var_g=var_3; var_b=var_1}
+		else if (var_i==1) {var_r=var_2; var_g=val;     var_b=var_1}
+		else if (var_i==2) {var_r=var_1; var_g=val;     var_b=var_3}
+		else if (var_i==3) {var_r=var_1; var_g=var_2; var_b=val}
+		else if (var_i==4) {var_r=var_3; var_g=var_1; var_b=val}
+		else               {var_r=val;     var_g=var_1; var_b=var_2}
+	}
+
+	var_r = Math.round(var_r*255);   //RGB results = From 0 to 255
+	var_g = Math.round(var_g*255);
+	var_b = Math.round(var_b*255);
+
+	return new Array(var_r, var_g, var_b);
+}
+
+
+function RGBArrayToString(rgb) {
+	var s = '';
+	for (var i=0; i<3; i++) {
+		var b = parseInt(rgb[i]).toString(16);
+		if (b.length < 2) {
+			b = '0' + b;
+		}
+
+		s = s + b;
+	}
+
+	return s;
+}
+
+
+function accountIdToBGColour(accountId) {
+	var h = (accountId & 0x0000ff) / 256.0;
+	var s = (accountId & 0x00ff00) / 256.0 / 256.0 / 2.0;
+	var v = (accountId & 0xff0000) / 256.0 / 256.0 / 256.0 / 4.0 + 0.75;
+	return '#' + RGBArrayToString( HSVtoRGB(h, s, v) );
+}
+
+
+function accountIdToFGColour(accountId) {
+	var h = 1.0 - ( (accountId & 0x0000ff) / 256.0 );
+	var s = 1.0 - ( (accountId & 0x00ff00) / 256.0 / 256.0 / 2.0 );
+	var v = 1.0 - ( (accountId & 0xff0000) / 256.0 / 256.0 / 256.0 / 4.0 + 0.75 );
+	return '#' + RGBArrayToString( HSVtoRGB(h, s, v) );
+}
+
+
+function renderPieChart( id, shares, text ) {
+	var canvas = document.getElementById(id);
+	var edgeLength = Math.min(canvas.clientWidth, canvas.clientHeight);
+	canvas.style.width = edgeLength + "px";
+	canvas.style.height = edgeLength + "px";
+	
+	canvas.setAttribute('width', edgeLength);
+	canvas.setAttribute('height', edgeLength);
+	
+	var context = canvas.getContext('2d');
+	context.clearRect(0, 0, canvas.width, canvas.height);
+	context.lineStyle = 'black';
+	context.lineWidth = 2;
+
+	var midX = canvas.width / 2;
+	var midY = canvas.height / 2;
+	var radius = midX; // assuming square canvas
+	var fixedStartAngle = 0 - Math.PI / 2;
+	var startAngle = fixedStartAngle;
+	var endAngle;
+
+	for(var i=0; i<shares.length; i++) {
+		if (i+1 < shares.length) {
+			endAngle = startAngle + (shares[i].share / 1000 * 2 * Math.PI);
+		} else {
+			// last one - join up nicely to avoid rounding errors
+			endAngle = fixedStartAngle + 2 * Math.PI;
+		}
+
+		context.beginPath();
+		context.moveTo( midX, midY );
+		context.arc(midX, midY, radius, startAngle, endAngle, false);
+		context.closePath();
+		context.fillStyle = shares[i].background;
+		context.fill();
+		
+		startAngle = endAngle;
+	}
+
+	if (shares.length) {
+		context.font = 'bold 16pt Roboto';
+		context.fillStyle = '#e91e63';
+		context.textAlign = 'center';
+		context.lineWidth = 1;
+		context.strokeStyle = '#795548';
+		multilineText( context, text, midX, midY );
+	}
+}
+
+
+function renderBarGraph( id, shares, text ) {
+	var container = document.getElementById(id);
+	container.innerHTML = '';
+
+	var bottom = 0;
+	var top;
+	
+	for(var i=0; i<shares.length; i++) {
+		top = bottom + (shares[i].share / 1000 * container.offsetHeight);
+
+		var chunk = document.getElementById('DIV');
+		chunk.className = 'bar-graph-chunk';
+		chunk.style.bottom = bottom + "px";
+		chunk.style.top = top + "px";
+		chunk.style.background = "linear-gradient(" + shares[i].colour + ",white," + shares[i].colour + ")";
+		container.appendChild(chunk);
+		
+		bottom = top;
+	}
+}
+
+
+function appendTD(tr, content) {
+	var td = document.createElement('TD');
+	td.appendChild( document.createTextNode(content) );
+	tr.appendChild(td);
+	return td;
+}
+
+
+function sharesUpdate( json ) {
+	var shareInfo = JSON.parse(json);
+
+	if (shareInfo.block) {
+		shares = shareInfo.shares;
+		var currentList = document.getElementById('current-shares-list');
+		currentList.innerHTML = '';
+
+		for(var i=0; i<shares.length; i++) {
+			var share = shares[i];
+			share.background = accountIdToBGColour(share.accountId32);
+			share.color = accountIdToFGColour(share.accountId32);
+			
+			var entry = document.createElement('TR');
+			entry.style.background = share.background;
+			entry.style.color = share.color;
+			
+			appendTD(entry, share.account);
+			appendTD(entry, share.deadlineString);
+			appendTD(entry, (share.share / 10).toFixed(1) + '%');
+
+			currentList.appendChild(entry);
+		}
+		
+		historicShares = shareInfo.historicShares;
+		var historicList = document.getElementById('historic-shares-list');
+		historicList.innerHTML = '';
+		for(var i=0; i<historicShares.length; i++) {
+			var share = historicShares[i];
+			share.background = accountIdToBGColour(share.accountId32);
+			share.color = accountIdToFGColour(share.accountId32);
+
+			var entry = document.createElement('TR');
+			entry.style.background = share.background;
+			entry.style.color = share.color;
+			
+			appendTD(entry, share.account);
+			appendTD(entry, (share.estimatedCapacityTB).toFixed(1) + 'TB');
+			appendTD(entry, (share.share / 10).toFixed(1) + '%');
+
+			historicList.appendChild(entry);
+		}
+		
+		renderPieChart('current-shares-chart', shares, 'Current block share');
+		renderPieChart('historic-shares-chart', historicShares, 'Historic block share');
+	}
+}
+
+
+function blockUpdate( json ) {
+	var blockMsg = JSON.parse(json);
+	
+	console.log("New block: " + blockMsg.block);
+	console.log(blockMsg);
+	shares = [];
+	renderPieChart('current-shares-chart', shares, 'Current block share');
+	renderBarGraph('current-shares-graph', shares, 'Current block share');
+	
+	var list = document.getElementById('current-shares-list');
+	list.innerHTML = '';
+	
+	var blockInfo = document.getElementById('current-block-info');
+	blockInfo.innerHTML = 'Block: ' + blockMsg.block;
+	
+	currentBlockStart = new Date(blockMsg.newBlockWhen * 1000);
+	
+	// 'awards' from previous block
+	var awards = document.getElementById('awards-list');
+	awards.innerHTML = '';
+	for(var award in blockMsg.awards) {
+		var tr = document.createElement('TR');
+		
+		var awardTd = appendTD(tr, award);
+		// prepend icon, etc.
+		awardTd.className = 'award';
+		var imageName = '/images/awards/' + award.replace(/ /g, '-') + '.png';
+		awardTd.style.backgroundImage = "url('" + imageName + "')";
+		
+		var accountTd = appendTD(tr, blockMsg.awards[award].account);
+		// change background colour to match account
+		accountTd.style.backgroundColor = accountIdToBGColour(blockMsg.awards[award].accountId32);
+		accountTd.style.color = accountIdToFGColour(blockMsg.awards[award].accountId32);
+		
+		awards.appendChild(tr);
+	}
+	
+	updateRecentBlocks();
+}
+
+
+var ws;
+function grabPoolUpdates() {
+	console.log("new ws");
+	ws = new WebSocket('ws://' + window.location.host + '/webAPI/updates', 'updates');
+	
+	ws.onmessage = function(e) {
+		if (e.data) {
+			if ( e.data.substr(0, 7) == 'SHARES:' ) {
+				sharesUpdate( e.data.substr(7) );
+			} else if (e.data.substr(0, 6) == 'BLOCK:' ) {
+				blockUpdate( e.data.substr(6) );
+			}
+		}
+	};
+	
+	ws.onopen = function(e) {
+		console.log("ws open");
+		ws.send("Update!");
+		ws.pingInterval = window.setInterval( function() { ws.send("Ping!") }, 10000 );
+	};
+	
+	ws.onerror = function(e) {
+		console.log("ws error");
+		if (ws) {
+			ws.close();
+		}
+	};
+	
+	ws.onclose = function(e) {
+		console.log("ws close");
+		if (ws && ws.pingInterval) {
+			window.clearInterval(ws.pingInterval);
+		}
+		
+		ws = null;
+		
+		// try to reconnect
+		window.setTimeout(grabPoolUpdates, 5000);
+	};
+}
+
+
+function multilineText( context, text, x, y ) {
+	var lines = text.split(/\n/);
+	for(var i=0; i<lines.length; i++) {
+		var line = lines[i];
+		context.strokeText(line, x, y);
+		context.fillText(line, x, y);
+
+		var span = document.createElement('SPAN');
+		span.style.visibility = 'hidden';
+		span.appendChild( document.createTextNode( line ) );
+		document.body.appendChild(span);
+
+		y += span.offsetHeight;
+		span.parentNode.removeChild(span);
+	}
+}
+
+
+function renderTimer() {
+	if (currentBlockStart) {
+		var canvas = document.getElementById('timer');
+		canvas.setAttribute('width', canvas.clientWidth);
+		canvas.setAttribute('height', canvas.clientHeight);
+		var context = canvas.getContext('2d');
+		context.clearRect(0, 0, canvas.width, canvas.height);
+		
+		// we need at least one share
+		if ( shares.length > 0 ) {
+			var deadline = shares[0].deadline;
+			var secondsSoFar = (new Date() - currentBlockStart) / 1000;
+			if (secondsSoFar > deadline) {
+				secondsSoFar = deadline;
+			}
+			var secondsToGo = deadline - secondsSoFar;
+			
+			var midX = canvas.width / 2;
+			var midY = canvas.height / 2;
+
+			// upper bulb is seconds to go
+			context.beginPath();
+			// centre
+			context.moveTo( midX, midY );
+			// top-left
+			context.lineTo( midX - midX * secondsToGo / deadline, midY - midY * secondsToGo / deadline );
+			// top-right
+			context.lineTo( midX + midX * secondsToGo / deadline, midY - midY * secondsToGo / deadline );
+			// centre
+			context.lineTo( midX, midY );
+			context.closePath();
+			var upperGradient = context.createLinearGradient(midX, midY, midX, midY - midY * secondsToGo / deadline);
+			upperGradient.addColorStop(0, '#004000');
+			upperGradient.addColorStop(1, '#008000');
+			context.fillStyle = upperGradient;
+			context.fill();
+			
+			// lower bulb is seconds so far
+			context.beginPath();
+			// bottom-left
+			context.moveTo( 0, midY * 2 );
+			// bottom-top
+			context.lineTo( midX * 2, midY * 2 );
+			// top
+			context.lineTo( midX, midY * 2 - midY * secondsSoFar / deadline ); 
+			// bottom-left
+			context.lineTo( 0, midY * 2);
+			context.closePath();
+			var lowerGradient = context.createLinearGradient(midX, midY*2, midX, midY * 2 - midY * secondsSoFar / deadline);
+			lowerGradient.addColorStop(0, '#400000');
+			lowerGradient.addColorStop(1, '#800000');
+			context.fillStyle = lowerGradient;
+			context.fill();
+			
+			// draw bulbs
+			context.beginPath();
+			// top-left
+			context.moveTo( 0, 0 );
+			// top-right
+			context.lineTo( midX * 2, 0 );
+			// centre
+			context.lineTo( midX + 4, midY );
+			// bottom-right
+			context.lineTo( midX * 2, midY * 2 );
+			// bottom-left
+			context.lineTo( 0, midY * 2 );
+			// centre 
+			context.lineTo( midX - 4, midY );
+			// top-left
+			context.lineTo( 0, 0 );
+			context.closePath();
+			context.lineWidth = 4;
+			context.strokeStyle = 'black';
+			context.stroke();
+			
+			// write times into bulbs
+			context.font = 'bold 10pt Roboto';
+			context.fillStyle = '#e91e63';
+			context.textAlign = 'center';
+			context.lineWidth = 1;
+			multilineText( context, deadlineToString(secondsToGo).replace(/, /g, "\n"), midX, midY * 0.25 );
+			multilineText( context, deadlineToString(secondsSoFar).replace(/, /g, "\n"), midX, midY * 1.75 );
+		}
+	}
+}
+
+
+function updateRecentBlocks() {
+	if (window.XMLHttpRequest) {
+		var ajaxObject = new XMLHttpRequest();
+	  
+		ajaxObject.onreadystatechange = function() {
+			if (ajaxObject.readyState == 4 && ajaxObject.status == 200) {
+				var blocksInfo = JSON.parse( ajaxObject.responseText );
+				
+				if (blocksInfo.blocks) {
+					var recentBlocks = document.getElementById('recent-blocks-list');
+					recentBlocks.innerHTML = '';
+					for(var i=0; i<blocksInfo.blocks.length; i++) {
+						var block = blocksInfo.blocks[i];
+						
+						var tr = document.createElement('TR');
+						
+						appendTD(tr, parseInt(block.block));
+	
+						if ( !block.isOurBlock ) {
+							appendTD(tr, block.generatorAccount + " @ " + deadlineToString( parseInt(block.deadline) ) );
+						}
+
+						var accountTd = appendTD(tr, block.ourBestAccount + " @ " + deadlineToString( parseInt(block.ourBestDeadline) ) );
+						accountTd.style.textAlign = 'center';
+						if (block.ourBestAccount != '') {
+							accountTd.style.backgroundColor = accountIdToBGColour(block.ourBestAccountId32);
+							accountTd.style.color = accountIdToFGColour(block.ourBestAccountId32);
+						}
+						
+						if ( block.isOurBlock ) {
+							accountTd.setAttribute('colspan', 2);
+						}
+						
+						recentBlocks.appendChild(tr);
+					}
+				}
+			}
+		};
+		
+		ajaxObject.open('GET', '/webAPI/getRecentBlocks', true);
+		ajaxObject.send();
+	}
+}
+
+
+window.addEventListener( 'load', grabPoolUpdates, false );
+window.addEventListener( 'load', updateRecentBlocks, false );
+window.setInterval( renderTimer, 1000 );

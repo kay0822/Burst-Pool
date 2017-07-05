@@ -1,0 +1,53 @@
+--- Diagnosis ---
+
+Table name: Shares
+Column 'blockID':
+	SQL: bigint unsigned not null
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Possible navigator: block() -> Block object
+Column 'accountID':
+	SQL: bigint unsigned not null
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Possible navigator: account() -> Account object
+Column 'share_fraction':
+	SQL: double not null
+	C++ data type: double
+	mySQL connector type: Double
+	Null-ness: NOT null
+Column 'deadline':
+	SQL: bigint unsigned not null
+	C++ data type: unsigned long long int
+	mySQL connector type: UInt64
+	Null-ness: NOT null
+Column 'deadline_string':
+	SQL: varchar(255) not null
+	C++ data type: std::string
+	mySQL connector type: String
+	Null-ness: NOT null
+Column 'miner':
+	SQL: varchar(255)
+	C++ data type: std::string
+	mySQL connector type: String
+	Null-ness: can be null
+Primary keys: blockID, accountID
+Index: [anon]: blockID, share_fraction
+Search modifier: 'before_blockID' takes uint64_t
+Search modifier: 'after_blockID' takes uint64_t
+Search modifier: 'historic_average' takes bool
+Search modifier: 'mean_weighted_deadline' takes bool
+SEARCHPREP method found!
+SEARCHPREP_SUPER class found!
+SEARCHPREP_END found!
+Method: 'historic_shares' takes  uint64_t to_blockID, uint64_t block_count , returns STATIC Share *
+
+--- Sanity checking ---
+
+
+--- Output ---
+
+Key column: blockID
+Key column: accountID

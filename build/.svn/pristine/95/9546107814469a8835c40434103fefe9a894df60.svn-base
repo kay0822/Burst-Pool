@@ -1,0 +1,101 @@
+#include "config.hpp"
+#include "Request.hpp"
+#include "StaticHandler.hpp"
+#include "StaticTemplateHandler.hpp"
+#include "RegistryHandler.hpp"
+
+#include "handlers.hxx"
+#include "templates/static-templates.hxx"
+
+#include "base.hpp"
+#include "server.hpp"
+#include "blockchain_monitor.hpp"
+#include "webAPI/updates.hpp"
+
+#include <sys/types.h>
+#include <signal.h>
+#include <pthread_np.h>
+
+
+Handler *Handlers::base::route( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	EXTRA_CLASS *extra = (EXTRA_CLASS *) req->extra;
+
+	// if we're being called as the superclass of a handler then there's no more routing to be done
+	if ( typeid(*this) != typeid( Handlers::base ) )
+		return NULL;
+
+	// everything's ok - carry on
+	return new RegistryHandler;
+};
+
+
+int Handlers::base::process_headers( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	return Handler::process_headers( connection, req, resp );
+};
+
+
+int Handlers::base::process( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	// if we get this far then something isn't right
+	return MHD_NO;
+};
+
+
+void Handlers::base::init() {
+	StaticHandler::document_root = DOC_ROOT;
+
+	// URL substrings are checked IN ORDER
+
+	// import generated list of staff handlers...
+	using namespace Handlers;
+
+	#include "base-handlers.cxx"
+	#include "API-handlers.cxx"
+	#include "webAPI-handlers.cxx"
+
+	RegistryHandler::register_handler<StaticHandler>( "/css" );
+	RegistryHandler::register_handler<StaticHandler>( "/js" );
+	RegistryHandler::register_handler<StaticHandler>( "/images" );
+	RegistryHandler::register_handler<StaticHandler>( "/fonts" );
+	RegistryHandler::register_handler<StaticHandler>( "/audio" );
+	RegistryHandler::register_handler<StaticHandler>( "/favicon.ico" );
+	RegistryHandler::register_handler<StaticHandler>( "/google" );
+	RegistryHandler::register_handler<StaticHandler>( "/robots.txt" );
+
+	RegistryHandler::register_handler<StaticTemplateHandler>( "/" );
+	RegistryHandler::register_handler<StaticTemplateHandler>( "[root]" );
+
+	// URL full-strings are checked IN ORDER
+	#include "templates/static-templates.cxx"
+
+	StaticTemplateHandler::register_template<Templates::home>( "/" );
+
+	// extension -> mime-type mappings
+	StaticHandler::register_mime_type( ".js", "text/javascript" );
+	StaticHandler::register_mime_type( ".css", "text/css" );
+	StaticHandler::register_mime_type( ".png", "image/png" );
+
+	// init objects too!
+	curl_global_init(CURL_GLOBAL_ALL);
+
+	mining_info_cache.blockID = 0;
+	mining_info_cache.scoop = 0;
+	mining_info_cache.prev_scoop = 0;
+	mining_info_cache.base_target = 0;
+	mining_info_cache.prev_base_target = 0;
+
+	Handlers::webAPI::updates::init();
+
+	// start blockchain monitoring thread
+	blockchain_monitor_init();
+}
+
+
+void Handlers::base::shutdown() {
+	std::cerr << "Handlers::base::shutdown()" << std::endl;
+	// tidy up
+	Handlers::webAPI::updates::shutdown();
+	blockchain_monitor_shutdown();
+	std::cerr << "Handlers::base::shutdown -- DONE!" << std::endl;
+
+	curl_global_cleanup();
+}

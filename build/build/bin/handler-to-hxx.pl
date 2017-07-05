@@ -1,0 +1,148 @@
+#!/usr/bin/perl -w
+
+use strict;
+
+use Cwd qw( realpath );
+use File::Basename;
+use FindBin;
+use lib "$FindBin::Bin/../contrib";
+
+use Indigo::Renderer;
+
+use Getopt::Std;
+
+my %opt;
+getopts( 'd:', \%opt );
+
+die("usage: $FindBin::Script [-d output-dir] handler.cpp\n") unless @ARGV == 1;
+
+$opt{d} ||= '.';
+
+my ($filename, $dirname, $suffix) = fileparse( $ARGV[0], '.cpp' );
+$dirname =~ s|^\./||;
+my $prefix = join( '', $dirname, $filename );
+my $class = $filename;
+$class =~ s|/|::|g;
+my $define_name = $prefix;
+$define_name =~ s|/|__|g;
+my @namespaces = ( 'Handlers' , split( /\//, $dirname ) );
+my $full_class = join('::', @namespaces, $class); 
+
+my %virtuals;
+
+# read build's Handler.hpp for virtual functions
+open(HANDLER_HPP, '../build/include/Handler.hpp') || die("Can't open Handler.hpp: $!\n");
+while(<HANDLER_HPP>) {
+	if (m/ virtual \s+ .*? (\w+) \( /x) {
+		my $fn = $1;
+		# remove pureness
+		s/ \) \s* = \s* 0 \s* ; /\);/x;
+		$virtuals{$fn} = $_;
+	}
+}
+close(HANDLER_HPP);
+
+
+# read this handler's cpp for methods we can auto-include in hxx
+my @methods;
+open(HANDLER_CPP, $ARGV[0]) || die("Can't open custom handler '$ARGV[0]': $!\n");
+while(<HANDLER_CPP>) {
+	if (m/ ^ \s* (.*?) $full_class :: (\S+) \( /xs) {
+		if (exists $virtuals{$2}) {
+			push(@methods, $virtuals{$2});
+		} else {
+			# local method?
+			my $method = $_;
+			# remove full class path
+			$method =~ s| $full_class :: ||x;
+			# replace opening { with ;
+			$method =~ s| \s* { .* $ |;\n|xso;
+			
+			push(@methods, $method);
+		} 
+	}
+}
+close(HANDLER_CPP);
+
+
+my $data = join('', <DATA>);
+my ($hpp_template, $hxx_inside_template) = split('__DATA__', $data);
+
+my $renderer = new Indigo::Renderer;
+
+
+my %info = (
+	prefix			=>	$prefix,
+	define_name		=>	$define_name,
+	class			=>	$class,
+	namespaces		=>	\@namespaces,
+	methods			=>	\@methods,
+);
+
+
+# --- HPP template --- #
+unless ( -r "$prefix.hpp" ) {
+	open(HPP, '>', "$prefix.hpp");
+	print HPP $renderer->render( \$hpp_template, \%info );
+	close(HPP);
+} 
+
+
+# --- HXX file --- #
+
+open(HXXI, '>', "$opt{d}/$prefix-inside.hxx");
+print HXXI $renderer->render( \$hxx_inside_template, \%info );
+close(HXXI);
+
+
+
+__DATA__
+// handler HPP - generated only if it doesn't exist
+
+#ifndef __HANDLER__<%=$define_name%>
+#define __HANDLER__<%=$define_name%>
+
+#include "Handler.hpp"
+#include "config.hpp"
+
+<% foreach my $namespace (@namespaces) { %>
+	namespace <%=$namespace%> {
+<% } %>
+
+#ifdef HANDLER_SUPERCLASS
+class <%=$class%>: public HANDLER_SUPERCLASS {
+#else
+class <%=$class%>: public Handler {
+#endif
+
+
+	// custom stuff goes here!
+
+
+
+	public:
+		#include "<%=$prefix%>-inside.hxx"
+
+};
+
+
+<% foreach my $namespace (reverse @namespaces) { %>
+	} // <%=$namespace%> namespace
+<% } %>
+
+#endif
+
+__DATA__
+// handler HXX of methods - always regenerated
+
+#ifdef STATIC
+#undef STATIC
+#endif
+#define STATIC static
+
+<% foreach my $method (@methods) { %>
+	<%=$method%>
+<% } %>
+
+#undef STATIC
+#define STATIC

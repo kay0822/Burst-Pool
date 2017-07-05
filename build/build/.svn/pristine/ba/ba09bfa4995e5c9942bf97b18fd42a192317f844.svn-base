@@ -1,0 +1,60 @@
+SRC_FILES:=${shell cd src; find * -name '*.cpp' -print}
+OBJ_FILES:=${SRC_FILES:.cpp=.o}
+OBJ_FILES:=${addprefix obj/,${OBJ_FILES}}
+LIBA=libSHMTech.a
+LIBS=libSHMTech.so
+
+DEBUG_FLAGS+= -DFOLLOW_SYMLINKS
+
+ifneq (,${findstring g++,${CXX}})
+LDRPATHS+=-Wl,--rpath=/usr/local/lib/gcc49
+endif
+
+LIBDIRS=
+LDFLAGS=${LIBDIRS} ${LDRPATHS} -shared -fpic -Wl,-soname,${LIBS} 
+
+CFLAGS?=-O3
+CFLAGS+=-pthread -fpic -g -std=c++11
+CXXFLAGS?=-O3
+CXXFLAGS+=-pthread -fpic -g -std=c++11
+
+
+.PATH: src include obj lib
+.SUFFIXES: .o .cpp .hpp
+
+
+all: 	dirs lib/libIDB.so lib/libIO.so lib/${LIBS} lib/${LIBA}
+
+clean: dirs
+	rm -fr lib obj
+
+dirs:
+	@mkdir -p obj obj/PayPal lib
+
+lib/${LIBA}: ${OBJ_FILES}
+	rm -f $@
+	ar r $@ $^
+
+lib/${LIBS}: ${OBJ_FILES}
+	${CXX} ${CXXFLAGS} ${LDFLAGS} -o $@ $^
+
+include/IDB/IDB.h: src/IDB/IDB.h
+	cd src/IDB; gmake install
+
+include/IO/Object.h: src/IO/Object.h
+	cd src/IO; gmake install
+
+lib/libIDB.so: contrib/IDB/IDB.h
+	cd contrib/IDB; gmake install
+
+lib/libIO.so: contrib/IO/Object.h
+	cd contrib/IO; gmake install
+
+contrib/IDB/IDB.h:
+	SVN_SSH="ssh -p9" svn co svn+ssh://indigo@svn.shmtech.biz/home/subversion/indigo/trunk/src/IDB contrib/IDB
+
+contrib/IO/Object.h:
+	SVN_SSH="ssh -p9" svn co svn+ssh://indigo@svn.shmtech.biz/home/subversion/indigo/trunk/src/IO contrib/IO
+
+obj/%.o: src/%.cpp include/%.hpp
+	${CXX} ${CFLAGS} -c ${DEBUG_FLAGS} -o $@ -I./include -I/usr/local/include src/$*.cpp

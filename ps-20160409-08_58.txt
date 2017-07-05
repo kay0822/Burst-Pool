@@ -1,0 +1,21 @@
+ PID STAT    TIME  SL  RE PAGEIN      VSZ     RSS LIM TSIZ %CPU %MEM COMMAND
+1083 IsJ  0:21.95 127 127      0 10283860 1263612   - 9108  0.0  6.0 /usr/local/libexec/mysqld --datadir=/var/db/mysql --pid-file=/var/run/mysqld.pid --skip-networking --log-error=/var/log/mysqld
+1108 IJ   0:00.04 127 127      0    32324    3924   -  260  0.0  0.0 /usr/local/bin/socat TCP4-LISTEN:80,reuseaddr,fork,backlog=200 TCP4:192.168.0.20:8124
+1119 SJ   0:00.01   5 127      0    32324    3928   -  260  0.0  0.0 /usr/local/bin/socat TCP4-LISTEN:80,reuseaddr,fork,backlog=200 TCP4:192.168.0.20:8124
+1095 SJ   0:00.79   1 127      0   162256   17660   -  112  0.0  0.1 bin/miner_rewarder
+1086 SJ   0:01.28   1 127      0   157900   17116   -   84  0.0  0.1 bin/blockchain_monitor
+1092 SJ   0:00.77   0 127      0   157896   16896   -   80  0.0  0.1 bin/block_forger
+1098 SJ   0:10.24   0 127      0   157896   17404   -   80  0.0  0.1 bin/reward_confirmer
+1110 SJ   0:00.37   0 127      0   157896   17060   -   80  0.0  0.1 bin/bonus_payer
+1089 SJ   0:00.29   0 127      0   157892   16896   -   76  0.0  0.1 bin/blockchain_refresh
+1101 SJ   0:01.64   0 127      0   157892   17108   -   76  0.0  0.1 bin/account_updater
+1105 SJ   0:01.01   0 127      0   204584   67728   -   72  0.0  0.3 bin/server
+1085 IsJ  0:00.00 127 127      0    14460    1824   -    8  0.0  0.0 daemon: bin/blockchain_monitor[1086] (daemon)
+1088 IsJ  0:00.00 127 127      0    14460    1824   -    8  0.0  0.0 daemon: bin/blockchain_refresh[1089] (daemon)
+1091 IsJ  0:00.00 127 127      0    14460    1824   -    8  0.0  0.0 daemon: bin/block_forger[1092] (daemon)
+1094 IsJ  0:00.00 127 127      0    14460    1824   -    8  0.0  0.0 daemon: bin/miner_rewarder[1095] (daemon)
+1097 IsJ  0:00.00 127 127      0    14460    1824   -    8  0.0  0.0 daemon: bin/reward_confirmer[1098] (daemon)
+1100 IsJ  0:00.00 127 127      0    14460    1824   -    8  0.0  0.0 daemon: bin/account_updater[1101] (daemon)
+1103 IsJ  0:00.00 127 127      0    14460    1824   -    8  0.0  0.0 daemon: bin/server[1105] (daemon)
+1106 IsJ  0:00.00 127 127      0    14460    1824   -    8  0.0  0.0 daemon: /usr/local/bin/socat[1108] (daemon)
+1109 IsJ  0:00.00 127 127      0    14460    1824   -    8  0.0  0.0 daemon: bin/bonus_payer[1110] (daemon)

@@ -1,0 +1,35 @@
+#include "API/getMiningInfo.hpp"
+
+#include "mining-info.hpp"
+
+
+STATIC int Handlers::API::getMiningInfo::inner( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	// grab mining info mutex and spew global string
+	if ( mining_info_cache.json.empty() ) {
+		resp->status_code = 503;
+		resp->content = JSON_ERROR(2001, "Yet to grab initial mining info from network - try again soon!");
+		return MHD_YES;
+	}
+
+	if ( pthread_mutex_lock( &mining_info_mutex ) ) {
+		// errr, try again later?
+		resp->status_code = 503;
+		resp->content = JSON_ERROR(2002, "Can't provide mining info at this time - try again soon!");
+		return MHD_YES;
+	}
+
+	resp->status_code = 200;
+	resp->content = mining_info_cache.json;
+
+	if ( pthread_mutex_unlock( &mining_info_mutex ) ) {
+		// er, now what?
+		std::cerr << "Can't unlock mining info mutex?!" << std::endl;
+	}
+
+	return MHD_YES;
+}
+
+
+int Handlers::API::getMiningInfo::process( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	return inner(connection, req, resp);
+}

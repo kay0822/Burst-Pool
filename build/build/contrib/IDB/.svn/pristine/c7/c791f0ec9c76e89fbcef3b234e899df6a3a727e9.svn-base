@@ -1,0 +1,8 @@
+#include "where.h"
+
+namespace IDB {
+	// generic "do nothing" case
+	unsigned int Where::bind(sql::PreparedStatement *pstmt, unsigned int bind_offset) {
+		return bind_offset;
+	};
+}

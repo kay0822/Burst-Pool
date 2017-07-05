@@ -1,0 +1,38 @@
+#include "IDB/sqlConcat.h"
+#include <cppconn/prepared_statement.h>
+#include <vector>
+
+namespace IDB { 
+
+	sqlConcat::sqlConcat(std::vector<std::string> *strings) {
+		for(int i=0; i<strings->size(); i++) {
+			values.push_back( strings->at(i) );
+		}
+	}
+
+	std::string sqlConcat::toString() {
+		std::string		output;
+
+		output = "CONCAT(";
+		
+		for(int i=0; i<values.size(); i++) {
+			if ( i > 0 )
+				output += ",";
+			
+			output += "?";
+		}
+		
+		output += ")";
+
+		return output;
+	}
+
+	unsigned int sqlConcat::bind(sql::PreparedStatement *pstmt, unsigned int bind_offset) {
+		for(int i=0; i<values.size(); i++) {
+			pstmt->setString(bind_offset++, values[i]);
+		}
+
+		return bind_offset;
+	}
+
+}

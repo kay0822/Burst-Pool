@@ -1,0 +1,43 @@
+#include "webAPI/getCurrentShares.hpp"
+
+#include "mining-info.hpp"
+
+#include "Share.hpp"
+#include "Block.hpp"
+
+#include "cJSON.hpp"
+
+
+int Handlers::webAPI::getCurrentShares::process( struct MHD_Connection *connection, Request *req, Response *resp ) {
+	Share shares;
+	shares.blockID( mining_info_cache.blockID );
+	shares.search();
+
+	cJSON *array = cJSON_CreateArray();
+
+	while( Share *share = shares.result() ) {
+		cJSON *entry = cJSON_CreateObject();
+		cJSON_AddStringToObject( entry, (char *)"accountId", Account::accountID_to_RS_string( share->accountID() ).c_str() );
+		cJSON_AddNumberToObject( entry, (char *)"share", share->share_permille() );
+		cJSON_AddNumberToObject( entry, (char *)"deadline", share->deadline() );
+		cJSON_AddStringToObject( entry, (char *)"deadline_string", share->deadline_string().c_str() );
+		cJSON_AddItemToArray(array, entry);
+
+		delete share;
+	}
+
+	cJSON *root = cJSON_CreateObject();
+	cJSON_AddNumberToObject( root, (char *)"block", mining_info_cache.blockID );
+	cJSON_AddItemToObject( root, (char *)"shares", array );
+
+	char *json = cJSON_Print(root);
+
+	resp->status_code = 200;
+	resp->content = std::string(json);
+
+	free(json);
+
+	cJSON_Delete(root);
+
+	return MHD_YES;
+}

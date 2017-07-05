@@ -1,0 +1,30 @@
+// generated hpp
+
+#ifndef __HANDLER__webAPI__updates
+#define __HANDLER__webAPI__updates
+
+#include "Handler.hpp"
+#include "config.hpp"
+#include "WebSocketHandler.hpp"
+
+
+namespace Handlers {
+
+	namespace webAPI {
+
+		class updates: public WebSocketHandler<updates> {
+			private:
+				uint64_t current_blockID;
+
+			public:
+				virtual void websocket_alert();
+				updates();
+
+		};
+
+	} // webAPI namespace
+
+} // Handlers namespace
+
+
+#endif

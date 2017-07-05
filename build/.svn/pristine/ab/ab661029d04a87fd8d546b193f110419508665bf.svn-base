@@ -1,0 +1,34 @@
+include ../build/gmake/src.gmk
+
+OBJS+=shabal.o ../output/src/BaseHandler.o ../output/src/config.o
+
+STANDALONE_LIBS=-lgnutls -lcrypto -lgcrypt -lmd -lboost_regex -lboost_iostreams -lboost_system -lboost_thread -lObjects -lSHMTech -lIO -lIDB -lmysqlcppconn -lcurl -lmicrohttpd
+STANDALONE_OBJS=../output/src/blockchain_common.o ../output/src/config.o shabal.o
+
+all: ../output/blockchain_refresh ../output/miner_rewarder ../output/reward_confirmer ../output/block_forger ../output/blockchain_monitor ../output/account_updater
+
+../output/blockchain_refresh: ../output/src/blockchain_refresh.o ${STANDALONE_OBJS} 
+	${CXX} ${CXXFLAGS} ${LDFLAGS} -o $@ $^ ${STANDALONE_LIBS}
+
+../output/miner_rewarder: ../output/src/miner_rewarder.o ${STANDALONE_OBJS}
+	${CXX} ${CXXFLAGS} ${LDFLAGS} -o $@ $^ ${STANDALONE_LIBS}
+
+../output/reward_confirmer: ../output/src/reward_confirmer.o ${STANDALONE_OBJS}
+	${CXX} ${CXXFLAGS} ${LDFLAGS} -o $@ $^ ${STANDALONE_LIBS}
+
+../output/block_forger: ../output/src/block_forger.o ${STANDALONE_OBJS}
+	${CXX} ${CXXFLAGS} ${LDFLAGS} -o $@ $^ ${STANDALONE_LIBS}
+
+../output/blockchain_monitor: ../output/src/blockchain_monitor.o ${STANDALONE_OBJS}
+	${CXX} ${CXXFLAGS} ${LDFLAGS} -o $@ $^ ${STANDALONE_LIBS}
+
+../output/account_updater: ../output/src/account_updater.o ${STANDALONE_OBJS}
+	${CXX} ${CXXFLAGS} ${LDFLAGS} -o $@ $^ ${STANDALONE_LIBS}
+
+
+shabal.o: shabal.h shabal-stripped.s
+	c++ -g -c -o shabal.o shabal-stripped.s
+
+shabal-stripped.s: shabal.s
+	grep -v '^\s*\#' shabal.s > shabal-stripped.s
+

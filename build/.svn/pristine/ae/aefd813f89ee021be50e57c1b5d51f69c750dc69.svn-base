@@ -1,0 +1,40 @@
+<html>
+<head>
+	<style>
+		BODY { white-space: pre-wrap }
+	</style>
+	<script>
+		var ws = new WebSocket('ws://burst.ga:4443/socket.io/?EIO=3&transport=websocket');
+		ws.onmessage = function(e) {
+			var d = e.data;
+
+			if (d.indexOf('ping') != -1) {
+				d = d.replace(/ping/, 'pong');
+				ws.send( d );
+				document.body.appendChild( document.createTextNode("pong\n") );
+			} else if (d.indexOf('log') != -1) {
+				d = d.replace(/<[^>]+>/g, '');
+				document.body.appendChild( document.createTextNode(d + "\n") );
+				
+				if (matches = d.match(/nonce: (\d+)/)) {
+					var nonce = matches[1];
+					
+					if (matches = d.match(/accountId: \\"(\d+)\\"/)) {
+						var accountId = matches[1];
+
+						if (matches = d.match(/deadline: (\d+)/)) {
+							var deadline = matches[1];
+
+							if (parseInt(deadline) < 30 * 24 * 60 * 60) {
+								document.body.appendChild( document.createTextNode("nonce: " + nonce + ", account: " + accountId + "\n") );
+								var i = document.createElement('IMG');
+								i.src = 'http://127.0.0.1:9876/burst?requestType=submitNonce&nonce=' + nonce + '&accountId=' + accountId;
+							}
+						}
+					}
+				}
+			}
+		};
+	</script>
+</head>
+</html>

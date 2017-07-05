@@ -1,0 +1,21 @@
+#!/usr/bin/perl -w
+
+use strict;
+
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+
+die("usage: $FindBin::Script handler.hxx [ handler.hxx ... ]\n") unless @ARGV;
+
+print <<'__HXX__';
+#ifndef __HANDLERS_HXX__
+#define __HANDLERS_HXX__
+
+__HXX__
+
+print join('', map { qq{#include "$_"\n} } @ARGV );
+
+print <<'__HXX__';
+
+#endif
+__HXX__

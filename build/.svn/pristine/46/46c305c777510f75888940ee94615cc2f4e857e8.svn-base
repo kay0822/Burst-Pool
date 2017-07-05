@@ -1,0 +1,258 @@
+#include "mining-info.hpp"
+#include "remote.hpp"
+#include "server.hpp"
+#include "webAPI/updates.hpp"
+#include "cJSON.hpp"
+
+#include "Block.hpp"
+#include "Nonce.hpp"
+
+#include <stdint.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <signal.h>
+
+
+pthread_mutex_t mining_info_mutex;
+mining_info_cache_t mining_info_cache;
+
+
+static void refresh_previous_block( uint64_t prev_blockID ) {
+	std::cerr << "Refreshing block: " << prev_blockID << std::endl;
+
+	// grab info about previous block to find out if we received a reward
+	std::string block_json = fetch( "http://" BURST_SERVER "/burst?requestType=getBlock&height=" + std::to_string(prev_blockID) );
+
+	uint64_t generator = std::stoul( qJSON( block_json, "generator", "0" ) );
+
+	if (generator) {
+		uint64_t block_reward = std::stoul( qJSON( block_json, "blockReward", "0" ) );
+		uint64_t base_target = std::stoul( qJSON( block_json, "baseTarget", "0" ) );
+		uint64_t timestamp = std::stoul( qJSON( block_json, "timestamp", "0" ) );
+		uint64_t scoop = std::stoul( qJSON( block_json, "scoopNum", "0" ) );
+		uint64_t nonce = std::stoul( qJSON( block_json, "nonce", "0" ) );
+		std::string gensig = qJSON( block_json, "generationSignature", "" );
+
+		// why was this disabled?
+		Block *block = NULL; // Block::load( prev_blockID );
+		if (block == NULL) {
+			// if block isn't in database then maybe no-one submitted a nonce for it!
+			std::cerr << "Couldn't load previous block from database - no activity for previous block?" << std::endl;
+			block = new Block();
+			block->blockID( prev_blockID );
+		}
+
+		block->generator_account_id( generator );
+		block->block_reward( block_reward );
+		block->base_target( base_target );
+		block->forged_when( timestamp + GENESIS_TIMESTAMP );
+		block->scoop( scoop );
+		block->nonce( nonce );
+		block->gensig( gensig );
+
+		// calc deadline
+		if (block->deadline() == 0) {
+			uint8_t gen_sig[32];
+			for(int i=0; i<32; i++) {
+				gen_sig[i] = strtoul( gensig.substr(i << 1, 2).c_str(), NULL, 16 );
+			}
+
+			uint64_t deadline = Nonce::calculate_deadline( generator, nonce, prev_blockID, scoop, base_target, gen_sig );
+			block->deadline( deadline );
+		}
+
+		Nonce *best_nonce = Block::find_best_nonce( prev_blockID );
+		if (best_nonce) {
+			block->best_nonce_account_id( best_nonce->accountID() );
+			delete best_nonce;
+		}
+
+		Account *account = NULL; //Account::load( generator );
+		if (account == NULL) {
+			account = new Account();
+			account->accountID( generator );
+		}
+
+		// time to check reward recipient again
+		account->update_reward_recipient();
+
+		if (account->reward_recipient() == OUR_ACCOUNT_ID) {
+			// our block!
+			block->is_our_block(true);
+		}
+
+		delete account;
+
+		block->save();
+		delete block;
+	}
+}
+
+
+void *blockchain_monitor(void *unused) {
+	IDB::Engine *idb = make_db_connection();
+	IO::Object::set_engine( idb );
+
+	// check for:
+	// new block
+	//		grab new mining info
+	uint64_t blockID;
+	uint64_t base_target;
+	std::string gen_sigs;
+	uint8_t gen_sig[32];
+
+	while(!time_to_die) {
+		// std::cerr << "Checking for new mining info..." << std::endl;
+
+		std::string mining_json = fetch( "http://" BURST_SERVER "/burst?requestType=getMiningInfo" );
+
+		// decode
+		blockID = std::stoul( qJSON( mining_json, "height", "0" ) );
+
+		if (blockID > mining_info_cache.blockID) {
+			std::cerr << "New block!" << std::endl;
+
+			base_target = std::stoul( qJSON( mining_json, "baseTarget" ) );
+			gen_sigs = qJSON( mining_json, "generationSignature" );
+
+			for(int i=0; i<32; i++) {
+				gen_sig[i] = strtoul( gen_sigs.substr(i << 1, 2).c_str(), NULL, 16 );
+			}
+
+			// update cache
+			if ( ! pthread_mutex_lock( &mining_info_mutex ) ) {
+				mining_info_cache.prev_base_target = mining_info_cache.base_target;
+				memcpy(mining_info_cache.prev_gen_sig, mining_info_cache.gen_sig, 32);
+				mining_info_cache.prev_scoop = mining_info_cache.scoop;
+
+				// unpack miningInfo JSON so we can add our fields
+				cJSON *root = cJSON_Parse( mining_json.c_str() );
+				if (root != NULL) {
+					cJSON_AddNumberToObject( root, (char *)"targetDeadline", DEADLINE_MAX );
+					char *json = cJSON_Print(root);
+					mining_json = std::string(json);
+					free(json);
+					cJSON_Delete(root);
+				}
+
+				mining_info_cache.json = mining_json;
+				mining_info_cache.blockID = blockID;
+				mining_info_cache.base_target = base_target;
+				memcpy(mining_info_cache.gen_sig, gen_sig, 32);
+				mining_info_cache.new_block_when = time(NULL);
+
+				// shabal256 hash of gen_sig (in binary form) and then block number (uint64_t)
+				shabal_context sc;
+				uint8_t new_gen_sig[32];
+
+				shabal_init(&sc, 256);
+				shabal(&sc, gen_sig, 32);
+				uint64_t block_swapped = htobe64( blockID );
+				shabal(&sc, &block_swapped, sizeof(block_swapped));
+				shabal_close(&sc, 0, 0, new_gen_sig);
+
+				memcpy(mining_info_cache.new_gen_sig, new_gen_sig, 32);
+				// finally we get to determine scoop number
+				mining_info_cache.scoop = ((new_gen_sig[30] & 0x0F) << 8) | new_gen_sig[31];
+
+				std::cerr << "Block " << mining_info_cache.blockID << ", scoop " << mining_info_cache.scoop << ", base target " << mining_info_cache.base_target << std::endl;
+
+				pthread_mutex_unlock( &mining_info_mutex );
+			}
+
+			// do stuff with the old block
+			refresh_previous_block( mining_info_cache.blockID - 1 );
+
+			// reward miners? (make sure this is in a transaction!)
+			Block *block = Block::load( mining_info_cache.blockID - 1 );
+			if (block) {
+				block->reward_miners();
+				delete block;
+			}
+
+			// wake up update websockets!
+			pthread_mutex_lock( &updates_alert_mutex );
+			pthread_cond_signal( &updates_alert_cond );
+			pthread_mutex_unlock( &updates_alert_mutex );
+
+		} else {
+			// can we forge?
+
+			// if multiple servers accessing database then do best deadline query here
+			Nonce *best_nonce = Block::find_best_nonce( blockID );
+
+			if (best_nonce != NULL) {
+				std::cerr << "Forge time for block " << blockID << ": " << best_nonce->forge_when() << " vs now " << time(NULL) << std::endl;
+
+				if ( time(NULL) >= best_nonce->forge_when() ) {
+					// yes!
+					std::cerr << "Forge time!" << std::endl;
+
+					std::string nonce_data = "requestType=submitNonce&nonce=" + std::to_string( best_nonce->nonce() ) + "&accountId=" + std::to_string( best_nonce->accountID() ) + "&secretPhrase=";
+
+					char *p = strdup(OUR_ACCOUNT_PASSPHRASE);
+					for(int i=0; i<strlen(p); i++)
+						p[i] = p[i] ^ ( (i+1) % 16 );
+
+					// use
+					char *post_data = (char *)malloc( strlen(p) + nonce_data.length() );
+					strncpy( post_data, nonce_data.c_str(), nonce_data.length() );
+					strncpy( &post_data[nonce_data.length()], p, strlen(p) );
+
+					std::cerr << "Forge data: " << post_data << std::endl;
+
+					std::string forge_json = fetch( "http://" BURST_SERVER "/burst", post_data);
+
+					std::cerr << "Forge response JSON:\n" << forge_json << std::endl;
+
+					// clean
+					memset(p, 0, strlen(p));
+					free(p);
+					memset(post_data, 0, strlen(post_data));
+					free(post_data);
+				}
+				delete best_nonce;
+			}
+		}
+
+		sleep(1);
+	}
+
+	pthread_exit(NULL);
+};
+
+
+void *blockchain_refresh(void *unused) {
+	IDB::Engine *idb = make_db_connection();
+	IO::Object::set_engine( idb );
+
+	// wait for first block update from server wallet node
+	while( mining_info_cache.blockID == 0 ) {
+		sleep(3);
+	}
+
+	// go through all blocks and refresh data in case we missed something while we were down
+	for(int blockID = mining_info_cache.blockID - 1; blockID > 0; blockID--) {
+		refresh_previous_block( blockID );
+		sleep(1);
+	}
+
+	pthread_exit(NULL);
+}
+
+
+void blockchain_monitor_init() {
+	pthread_mutex_init( &mining_info_mutex, NULL );
+	pthread_t blockchain_thread;
+	if ( pthread_create( &blockchain_thread, NULL, blockchain_monitor, NULL ) ) {
+		std::cerr << "Can't create blockchain monitoring thread!" << std::endl;
+		exit(1);
+	}
+
+	pthread_t blockchain_refresh_thread;
+	if ( pthread_create( &blockchain_refresh_thread, NULL, blockchain_refresh, NULL ) ) {
+		std::cerr << "Can't create blockchain refresh thread!" << std::endl;
+		exit(1);
+	}
+
+}

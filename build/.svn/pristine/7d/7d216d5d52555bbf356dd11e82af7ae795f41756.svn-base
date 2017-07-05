@@ -1,0 +1,91 @@
+#include <iostream>
+
+#include "config_loader.hpp"
+#include "config.hpp"
+// for safe_strtoull
+#include "remote.hpp"
+
+#include "Account.hpp"
+
+
+#ifdef DEBUG_WITH_DMALLOC
+#include "dmalloc.h"
+#endif
+
+
+std::string BURST_SERVER;
+std::string POOL_NAME;
+
+uint64_t ACCOUNT_UPDATE_TIMEOUT;
+uint64_t OUR_ACCOUNT_ID;
+std::string OUR_ACCOUNT_RS;
+char *OUR_ACCOUNT_PASSPHRASE;
+uint64_t DEADLINE_MAX;
+uint64_t DEADLINE_BAD;
+uint64_t HISTORIC_BLOCK_COUNT;
+uint64_t HISTORIC_CAPACITY_BLOCK_COUNT;
+uint64_t SUBMIT_NONCE_COOLOFF;
+double POOL_FEE_FRACTION;
+uint64_t POOL_FEE_ACCOUNTID;
+uint64_t MINIMUM_PAYOUT;
+double SHARE_SCALING_FACTOR;
+uint64_t CURRENT_BLOCK_REWARD_PERCENT;
+uint64_t RECENT_BLOCK_HISTORY_DEPTH;
+uint64_t MAX_PAYOUT_BLOCK_DELAY;
+
+
+void more_config( cJSON *root ) {
+	BURST_SERVER = std::string( config_item(root, "burstServer") );
+	POOL_NAME = std::string( config_item(root, "poolName") );
+
+	ACCOUNT_UPDATE_TIMEOUT = safe_strtoull( config_item(root, "accountUpdateTimeout") );
+	OUR_ACCOUNT_ID = safe_strtoull( config_item(root, "poolNumericAccountId") );
+	OUR_ACCOUNT_RS = Account::accountID_to_RS_string( OUR_ACCOUNT_ID );
+	OUR_ACCOUNT_PASSPHRASE = config_item(root, "poolEncodedPassphrase");
+
+	DEADLINE_MAX = safe_strtoull( config_item(root, "poolDeadlineLimit") );
+	DEADLINE_BAD = safe_strtoull( config_item(root, "poolDeadlineReallyBad") );
+
+	HISTORIC_BLOCK_COUNT = safe_strtoull( config_item(root, "historicBlockCount") );
+	HISTORIC_CAPACITY_BLOCK_COUNT = safe_strtoull( config_item(root, "capacityBlockCount") );
+
+	SUBMIT_NONCE_COOLOFF = safe_strtoull( config_item(root, "submitNonceCooloff") );
+
+	POOL_FEE_FRACTION = safe_strtoull( config_item(root, "poolFeePercent") ) / 100.0;
+	POOL_FEE_ACCOUNTID = safe_strtoull( config_item(root, "poolFeeNumericAccountId") );
+
+	MINIMUM_PAYOUT = safe_strtoull( config_item(root, "minimumPayout" ) );
+
+	SHARE_SCALING_FACTOR = safe_strtoull( config_item(root, "shareScalingFactor" ) ) / 100.0;
+	CURRENT_BLOCK_REWARD_PERCENT = safe_strtoull( config_item(root, "currentBlockRewardPercent" ) );
+
+	RECENT_BLOCK_HISTORY_DEPTH = safe_strtoull( config_item(root, "recentBlockHistoryDepth") );
+
+	MAX_PAYOUT_BLOCK_DELAY = safe_strtoull( config_item(root, "maximumPayoutBlockDelay") );
+
+	// late-stage validity checks
+	if ( (LISTEN_PORT < 1) || (LISTEN_PORT > 65535) ) {
+		std::cerr << "listenPort needs to be between 1 and 65535" << std::endl;
+		exit(2);
+	}
+
+	if ( DEADLINE_MAX == 0 ) {
+		std::cerr << "poolDeadlineLimit - maximum deadline accepted (in seconds)" << std::endl;
+		exit(2);
+	}
+
+	if ( DEADLINE_BAD == 0 ) {
+		std::cerr << "poolDeadlineReallyBad - threshold for 'deadline REALLY BAD' message (seconds)" << std::endl;
+		exit(2);
+	}
+
+	if ( DEADLINE_BAD <= DEADLINE_MAX ) {
+		std::cerr << "poolDeadlineReallyBad should be way bigger than poolDeadlineLimit" << std::endl;
+		exit(2);
+	}
+
+	if ( HISTORIC_BLOCK_COUNT == 0 ) {
+		std::cerr << "historicBlockCount - number of previous blocks to take into account for rewards" << std::endl;
+		exit(2);
+	}
+}

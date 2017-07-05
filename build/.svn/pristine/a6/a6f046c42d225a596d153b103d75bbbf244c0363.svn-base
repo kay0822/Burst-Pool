@@ -1,0 +1,19 @@
+#ifndef REMOTE__
+#define REMOTE__
+
+#include "base.hpp"
+#include "config.hpp"
+#include <curl/curl.h>
+#include "cJSON.hpp"
+
+
+typedef struct {
+		MHD_UpgradeHandler		*handler;
+		struct MHD_Connection	*connection;
+} websocket_t;
+
+
+std::string fetch( std::string url, std::string post_data = "" );
+std::string qJSON( std::string json, std::string param, std::string def = "" );
+
+#endif
